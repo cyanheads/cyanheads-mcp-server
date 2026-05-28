@@ -1,7 +1,10 @@
 /**
  * @fileoverview Embeddings runtime — wraps @huggingface/transformers's
  * feature-extraction pipeline to embed query strings at search time.
- * Loaded once at startup, kept warm for the lifetime of the process.
+ * Lazy-loads the model on the first embedQuery() call; subsequent calls reuse
+ * the warm pipeline for the lifetime of the process. Concurrent first-callers
+ * share a single load promise so the model is fetched exactly once. On load
+ * failure the promise is cleared so the next call retries from scratch.
  * Applies the asymmetric query prefix declared in the catalog payload and
  * Matryoshka-truncates + L2-normalizes the output to match document vectors.
  * @module services/catalog/embeddings-runtime
@@ -27,44 +30,47 @@ env.cacheDir =
 
 export interface IEmbeddingsRuntime {
   embedQuery(text: string, dims: number, queryPrefix: string): Promise<Float32Array>;
-  initialize(): Promise<void>;
   readonly modelId: string;
 }
 
 export class TransformersEmbeddingsRuntime implements IEmbeddingsRuntime {
   private _extractor: FeatureExtractionPipeline | null = null;
+  private _loadPromise: Promise<FeatureExtractionPipeline> | null = null;
 
   constructor(public readonly modelId: string) {}
 
-  async initialize(): Promise<void> {
-    if (this._extractor) return;
-    logger.info(`Loading embedding model: ${this.modelId}`);
-    const startMs = Date.now();
-    try {
-      this._extractor = (await pipeline(
-        'feature-extraction',
-        this.modelId,
-      )) as FeatureExtractionPipeline;
-    } catch (err) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        `Failed to load embedding model ${this.modelId}: ${err instanceof Error ? err.message : String(err)}`,
-        { modelId: this.modelId },
-        { cause: err },
-      );
+  private _ensureLoaded(): Promise<FeatureExtractionPipeline> {
+    if (this._extractor) return Promise.resolve(this._extractor);
+    if (!this._loadPromise) {
+      logger.info(`Lazy-loading embedding model: ${this.modelId}`);
+      const startMs = Date.now();
+      this._loadPromise = (async () => {
+        try {
+          const extractor = (await pipeline(
+            'feature-extraction',
+            this.modelId,
+          )) as FeatureExtractionPipeline;
+          this._extractor = extractor;
+          logger.info(`Embedding model loaded in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
+          return extractor;
+        } catch (err) {
+          this._loadPromise = null;
+          throw new McpError(
+            JsonRpcErrorCode.InternalError,
+            `Failed to load embedding model ${this.modelId}: ${err instanceof Error ? err.message : String(err)}`,
+            { modelId: this.modelId },
+            { cause: err },
+          );
+        }
+      })();
     }
-    logger.info(`Embedding model loaded in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
+    return this._loadPromise;
   }
 
   async embedQuery(text: string, dims: number, queryPrefix: string): Promise<Float32Array> {
-    if (!this._extractor) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        'Embeddings runtime not initialized — call initialize() first.',
-      );
-    }
+    const extractor = await this._ensureLoaded();
     const input = `${queryPrefix}${text}`;
-    const tensor = await this._extractor([input], {
+    const tensor = await extractor([input], {
       pooling: 'cls',
       normalize: false,
     });

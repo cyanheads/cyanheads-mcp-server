@@ -72,8 +72,6 @@ export class CatalogService implements ICatalogService {
     this._assertModelMatch(payload);
     this._index = this._buildIndex(payload);
 
-    await this._embeddings.initialize();
-
     logger.info(
       `Fleet catalog loaded: ${payload.servers.length} servers, ${this._index.toolByName.size} tools ` +
         `(model=${payload.embeddingModel}, dims=${payload.embeddingDims}, generatedAt=${payload.generatedAt})`,

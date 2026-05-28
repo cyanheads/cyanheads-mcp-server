@@ -97,7 +97,6 @@ function makeMockEmbeddings(
 ): IEmbeddingsRuntime {
   return {
     modelId: TEST_MODEL,
-    async initialize() {},
     async embedQuery(text: string, dims: number) {
       const raw = vectors[text] ?? fallback;
       let sumSq = 0;

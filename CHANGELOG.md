@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-05-28
+
+Lazy-load the embedding model on first cyanheads_search call — startup no longer blocks on ~2 s pipeline warm-up; first query absorbs the cost once, steady-state inference unchanged
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-05-28 · ⚠️ Breaking
 
 Rewrite install snippet builders — drop legacy SSE transport tag, emit correct per-client formats (claude-code/codex/cursor/curl/gemini/streamable-http) verified against the hosted endpoint
