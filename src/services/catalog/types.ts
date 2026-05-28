@@ -6,7 +6,7 @@
  */
 
 /** Supported MCP client identifiers for install snippets. */
-export type ClientId = 'claude-desktop' | 'claude-code' | 'cursor' | 'cline';
+export type ClientId = 'claude-code' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http';
 
 /** Catalog category for a fleet server. */
 export type CatalogCategory = 'research' | 'government' | 'public-data' | 'utility';
@@ -32,10 +32,12 @@ export interface InstallSnippet {
   label: string;
   /**
    * The install payload. Shape varies by client:
-   * - claude-desktop: JSON fragment for mcpServers block
-   * - claude-code: CLI command string
-   * - cursor: JSON fragment for .cursor/mcp.json mcpServers block
-   * - cline: JSON fragment for Cline's MCP settings
+   * - claude-code: CLI command (`claude mcp add --transport http <name> <url>`)
+   * - codex: CLI command (`codex mcp add <name> --url <url>`)
+   * - cursor: JSON fragment for `.cursor/mcp.json` mcpServers block (no `type` field)
+   * - curl: HTTP `initialize` request for connectivity testing
+   * - gemini: CLI command (`gemini mcp add --transport http <name> <url>`)
+   * - streamable-http: generic JSON fragment for any MCP HTTP client (Claude Desktop, Cline, mcp-remote)
    */
   payload: string;
 }
@@ -58,7 +60,7 @@ export interface CatalogRecord {
    * `${displayName}\n${description}`. Length matches FleetPayload.embeddingDims.
    */
   embedding: number[];
-  /** HTTP SSE endpoint — always present; the catalog covers hosted servers only. */
+  /** Streamable HTTP endpoint — always present; the catalog covers hosted servers only. */
   endpoint: string;
   /** GitHub repository URL. */
   github: string;

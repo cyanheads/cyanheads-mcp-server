@@ -37,7 +37,7 @@ export const describeTool = tool('cyanheads_describe', {
           'underscores are treated as tools; names containing hyphens are treated as servers.',
       ),
     client: z
-      .enum(['claude-desktop', 'claude-code', 'cursor', 'cline'])
+      .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
       .optional()
       .describe(
         'Return the install snippet for this specific client only. ' +
@@ -62,7 +62,7 @@ export const describeTool = tool('cyanheads_describe', {
           version: z.string().describe('Published version captured at fleet-generation time.'),
           npm: z.string().describe('npm package name (e.g. "@cyanheads/arxiv-mcp-server").'),
           github: z.string().describe('GitHub repository URL.'),
-          endpoint: z.string().describe('HTTP SSE endpoint for the hosted deployment.'),
+          endpoint: z.string().describe('Streamable HTTP endpoint for the hosted deployment.'),
           auth: z
             .string()
             .describe('Auth requirement for the hosted deployment (currently always "none").'),
@@ -72,7 +72,7 @@ export const describeTool = tool('cyanheads_describe', {
               z
                 .object({
                   client: z
-                    .enum(['claude-desktop', 'claude-code', 'cursor', 'cline'])
+                    .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
                     .describe('MCP client this snippet targets.'),
                   label: z.string().describe('Human-readable install method label.'),
                   payload: z.string().describe('Install payload (JSON fragment or CLI command).'),

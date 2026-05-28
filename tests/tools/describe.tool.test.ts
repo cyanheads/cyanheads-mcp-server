@@ -176,7 +176,21 @@ describe('cyanheads_describe', () => {
     }
   });
 
-  it('generates SSE snippet for hosted servers', async () => {
+  it('emits the Streamable HTTP transport tag, never the legacy SSE one', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeTool.handler(input, ctx);
+
+    expect(result.kind).toBe('server');
+    if (result.kind === 'server') {
+      for (const snippet of result.installSnippets) {
+        expect(snippet.payload).not.toContain('sse');
+        expect(snippet.payload).toContain('earthquake.caseyjhand.com');
+      }
+    }
+  });
+
+  it('claude-code snippet matches `claude mcp add --transport http <name> <url>`', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -184,11 +198,91 @@ describe('cyanheads_describe', () => {
       client: 'claude-code',
     });
     const { result } = await describeTool.handler(input, ctx);
-
-    expect(result.kind).toBe('server');
     if (result.kind === 'server') {
-      expect(result.installSnippets[0].payload).toContain('--transport sse');
-      expect(result.installSnippets[0].payload).toContain('earthquake.caseyjhand.com');
+      expect(result.installSnippets[0]?.payload).toBe(
+        'claude mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
+      );
+    }
+  });
+
+  it('codex snippet matches `codex mcp add <name> --url <url>`', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'server',
+      client: 'codex',
+    });
+    const { result } = await describeTool.handler(input, ctx);
+    if (result.kind === 'server') {
+      expect(result.installSnippets[0]?.payload).toBe(
+        'codex mcp add earthquake-mcp-server --url https://earthquake.caseyjhand.com/mcp',
+      );
+    }
+  });
+
+  it('gemini snippet matches `gemini mcp add --transport http <name> <url>`', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'server',
+      client: 'gemini',
+    });
+    const { result } = await describeTool.handler(input, ctx);
+    if (result.kind === 'server') {
+      expect(result.installSnippets[0]?.payload).toBe(
+        'gemini mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
+      );
+    }
+  });
+
+  it('cursor JSON omits the `type` field', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'server',
+      client: 'cursor',
+    });
+    const { result } = await describeTool.handler(input, ctx);
+    if (result.kind === 'server') {
+      const parsed = JSON.parse(result.installSnippets[0]!.payload);
+      expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+        url: 'https://earthquake.caseyjhand.com/mcp',
+      });
+    }
+  });
+
+  it('streamable-http JSON carries `type: "http"`', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'server',
+      client: 'streamable-http',
+    });
+    const { result } = await describeTool.handler(input, ctx);
+    if (result.kind === 'server') {
+      const parsed = JSON.parse(result.installSnippets[0]!.payload);
+      expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+        type: 'http',
+        url: 'https://earthquake.caseyjhand.com/mcp',
+      });
+    }
+  });
+
+  it('curl snippet POSTs initialize with the MCP-Protocol-Version header', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'server',
+      client: 'curl',
+    });
+    const { result } = await describeTool.handler(input, ctx);
+    if (result.kind === 'server') {
+      const payload = result.installSnippets[0]!.payload;
+      expect(payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
+      expect(payload).toContain('Content-Type: application/json');
+      expect(payload).toContain('MCP-Protocol-Version: 2025-11-25');
+      expect(payload).toContain('"method":"initialize"');
+      expect(payload).toContain('"protocolVersion":"2025-11-25"');
     }
   });
 
@@ -235,9 +329,16 @@ describe('cyanheads_describe', () => {
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
-      expect(result.installSnippets).toHaveLength(4);
+      expect(result.installSnippets).toHaveLength(6);
       const clients = result.installSnippets.map((s) => s.client).sort();
-      expect(clients).toEqual(['claude-code', 'claude-desktop', 'cline', 'cursor']);
+      expect(clients).toEqual([
+        'claude-code',
+        'codex',
+        'curl',
+        'cursor',
+        'gemini',
+        'streamable-http',
+      ]);
     }
   });
 
@@ -286,7 +387,7 @@ describe('cyanheads_describe', () => {
             client: 'claude-code',
             label: 'Claude Code (CLI)',
             payload:
-              'claude mcp add --transport sse earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
+              'claude mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
           },
         ],
       },

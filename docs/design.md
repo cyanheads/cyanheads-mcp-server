@@ -161,7 +161,7 @@ interface InstallSnippet {
   payload: string;
 }
 
-type ClientId = 'claude-desktop' | 'claude-code' | 'cursor' | 'cline';
+type ClientId = 'claude-code' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http';
 ```
 
 Embeddings are L2-normalized at build time so the runtime cosine similarity collapses to a dot product.
@@ -170,14 +170,16 @@ Embeddings are L2-normalized at build time so the runtime cosine similarity coll
 
 ## Per-Client Install Snippet Registry
 
-### Supported clients in v0
+### Supported clients
 
 | Client | Mechanism | Format |
 |:-------|:----------|:-------|
-| `claude-desktop` | JSON merge into `~/Library/Application Support/Claude/claude_desktop_config.json` `mcpServers` block | JSON object |
 | `claude-code` | `claude mcp add` CLI command | Shell command string |
-| `cursor` | JSON merge into `.cursor/mcp.json` `mcpServers` block | JSON object |
-| `cline` | JSON merge into Cline VS Code extension MCP settings | JSON object |
+| `codex` | `codex mcp add` CLI command | Shell command string |
+| `cursor` | JSON merge into `.cursor/mcp.json` `mcpServers` block (no `type` field) | JSON object |
+| `curl` | `initialize` POST for connectivity testing | Shell command string |
+| `gemini` | `gemini mcp add` CLI command | Shell command string |
+| `streamable-http` | Generic `mcpServers` JSON for any MCP HTTP client (Claude Desktop, Cline, mcp-remote) | JSON object |
 
 Adding a client = one entry in the static registry + one `ClientId` union member. No handler changes.
 
@@ -187,24 +189,32 @@ Adding a client = one entry in the static registry + one `ClientId` union member
 
 ### Snippet formats
 
-All hosted servers use SSE transport.
+All hosted servers run Streamable HTTP. The legacy `sse` transport tag is never emitted.
 
 ```ts
-// claude-desktop
-{ client: 'claude-desktop', label: 'Claude Desktop (JSON config)',
-  payload: JSON.stringify({ [record.name]: { type: 'sse', url: record.endpoint } }, null, 2) }
-
 // claude-code
 { client: 'claude-code', label: 'Claude Code (CLI)',
-  payload: `claude mcp add --transport sse ${record.name} ${record.endpoint}` }
+  payload: `claude mcp add --transport http ${record.name} ${record.endpoint}` }
+
+// codex
+{ client: 'codex', label: 'Codex (CLI)',
+  payload: `codex mcp add ${record.name} --url ${record.endpoint}` }
 
 // cursor
 { client: 'cursor', label: 'Cursor (mcp.json)',
-  payload: JSON.stringify({ mcpServers: { [record.name]: { type: 'sse', url: record.endpoint } } }, null, 2) }
+  payload: JSON.stringify({ mcpServers: { [record.name]: { url: record.endpoint } } }, null, 2) }
 
-// cline
-{ client: 'cline', label: 'Cline (VS Code)',
-  payload: JSON.stringify({ [record.name]: { type: 'sse', url: record.endpoint, disabled: false, autoApprove: [] } }, null, 2) }
+// curl
+{ client: 'curl', label: 'curl (initialize probe)',
+  payload: `curl -X POST ${record.endpoint} \\\n  -H "Content-Type: application/json" \\\n  -H "MCP-Protocol-Version: 2025-11-25" \\\n  -d '${initializeBody}'` }
+
+// gemini
+{ client: 'gemini', label: 'Gemini (CLI)',
+  payload: `gemini mcp add --transport http ${record.name} ${record.endpoint}` }
+
+// streamable-http
+{ client: 'streamable-http', label: 'Streamable HTTP (Claude Desktop, Cline, generic)',
+  payload: JSON.stringify({ mcpServers: { [record.name]: { type: 'http', url: record.endpoint } } }, null, 2) }
 ```
 
 ---
@@ -295,7 +305,7 @@ z.object({
   kind: z.enum(['tool', 'server']).optional().describe(
     'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
   ),
-  client: z.enum(['claude-desktop', 'claude-code', 'cursor', 'cline']).optional().describe(
+  client: z.enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http']).optional().describe(
     'Return the install snippet for this specific client only. Omit for all supported clients.'
   ),
 })
