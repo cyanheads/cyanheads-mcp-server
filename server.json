@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads-mcp-server",
-  "description": "",
+  "name": "cyanheads/cyanheads-mcp-server",
+  "description": "Fleet discovery server for the cyanheads MCP ecosystem — search tools and servers, get schemas and install snippets.",
   "repository": {
-    "url": "",
+    "url": "https://github.com/cyanheads/cyanheads-mcp-server",
     "source": "github"
   },
   "version": "0.1.0",

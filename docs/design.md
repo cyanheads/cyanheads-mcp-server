@@ -6,128 +6,165 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `cyanheads_search` | Semantic (Phase 2) or full-text (Phase 1) search across fleet tools and servers. | `query`, `scope`, `category`, `limit` | `readOnlyHint: true`, `openWorldHint: false` |
-| `cyanheads_describe` | Full schema, connection URL, and per-client install snippets for a named tool or server. | `name`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
-| `cyanheads_invoke` | Passthrough dispatch to a fleet backend. Input is revalidated against the backend's published schema before forwarding. Enabled only when `ENABLE_INVOKE=true`. | `tool_name`, `input` | `destructiveHint: true`, `openWorldHint: true` |
+| `cyanheads_search` | Semantic search across fleet tools and servers. Returns ranked matches with brief summaries and the server each tool belongs to. | `query`, `scope`, `category`, `limit` | `readOnlyHint: true`, `openWorldHint: false` |
+| `cyanheads_describe` | Description, connection URL, and per-client install snippets for a named tool or server. | `name`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
+| `cyanheads_invoke` *(Phase 2)* | Passthrough dispatch to a fleet backend. Deferred. | — | — |
 
 ### Resources
 
-None — the catalog is reachable exclusively via tools. See "Resources" section for rationale.
+None. See "Resources" section for rationale.
 
 ### Prompts
 
-None in Phase 1. No recurring interaction patterns identified.
+None.
 
 ---
 
 ## Overview
 
-`cyanheads-mcp-server` is a meta-server that fronts a fleet of other MCP servers. An agent connecting to it sees 2 or 3 tools regardless of fleet size, and can discover, learn about, and (in the paid deployment) invoke any capability in the fleet via those tools.
+`cyanheads-mcp-server` is a meta-server that fronts the cyanheads hosted MCP fleet. An agent connecting to one endpoint (`https://cyanheads.caseyjhand.com/mcp`) sees two tools — search and describe — and uses them to discover and learn how to install any of the ~40 hosted servers in their own client.
 
-**Consumers:** LLM agents running in any MCP client. Indirect consumers: developers choosing which fleet server to configure and which client format to use.
+**Primary use case.** A user adds `cyanheads.caseyjhand.com/mcp` to their MCP client. From then on, their agent can answer "what server handles X?" via semantic search, and "how do I add that server to my client?" via per-client install snippets — without the user maintaining a sprawling local MCP config.
 
-**Two deployment shapes, one codebase:**
+**Audience.**
 
-| Deployment | Tools | Auth | Trigger |
-|:-----------|:------|:-----|:--------|
-| Public discovery | `search`, `describe` | `MCP_AUTH_MODE=none` | `ENABLE_INVOKE` unset or `false` |
-| Passthrough gateway | `search`, `describe`, `invoke` | `MCP_AUTH_MODE=jwt` or `oauth` | `ENABLE_INVOKE=true` |
+| Surface | Who it's for | What they need |
+|:--|:--|:--|
+| The hosted endpoint | Users of MCP clients (Claude Desktop, Claude Code, Cursor, Cline) | One URL to add. Marketing-style README, not a developer scaffolding guide. |
+| The source repo | The operator (cyanheads) and the rare cloner | Architecture, model choice, deploy notes — kept at the bottom of the README, expanded in this doc. |
+
+The repo is open source but the hosted endpoint is the product. README positioning reflects that.
 
 ---
 
 ## Requirements
 
-- Fleet catalog must be queryable without exposing per-tool schemas in the tool list itself.
-- Phase 1 catalog is static — a TypeScript module with hand-curated records matching the KB frontmatter shape.
-- Phase 1 search is full-text (no embeddings). Phase 2 migrates to Vectorize-backed semantic search.
-- `describe` returns all client snippets when `client` is omitted; one snippet when a client is specified.
-- `invoke` is absent from the tool list when `ENABLE_INVOKE` is falsy — the gateway deployment is the only consumer.
-- Per-client snippet registry is a static lookup table in code; no runtime generation.
-- No runtime dependencies on external services in Phase 1 (in-memory catalog, no KV, no Vectorize).
-- Phase 2 targets Cloudflare Workers + KV + Vectorize. Phase 1 works in stdio and HTTP.
+- Two tools only in Phase 1: `cyanheads_search` (semantic), `cyanheads_describe`.
+- Semantic search is P0 — float cosine similarity, not token overlap.
+- Catalog is fetched at startup from `https://caseyjhand.com/fleet.json`. The portfolio owns and produces this file; the server is a consumer.
+- Document embeddings are baked into `fleet.json` at portfolio build time. The server never embeds documents — only queries.
+- Document and query embeddings must use the same model. The fleet payload declares its model id; the server refuses to load if its runtime model id doesn't match.
+- Query embedding happens once per `cyanheads_search` call on the VPS. Cosine sim against the in-memory vector set is the hot path.
+- `cyanheads_describe` returns all client snippets when `client` is omitted; one snippet when a client is specified.
+- Phase 1 runs on the VPS (stdio + HTTP). No Cloudflare Workers / Vectorize / KV / D1 dependencies.
+- The catalog refreshes by polling `fleet.json` on a configurable interval (default 1 hour). Document embeddings come along for free since they live in the same file.
+
+---
+
+## Embedding Architecture
+
+The single most important property: **document embeddings are produced once, at portfolio build time, and shipped inside `fleet.json`. The server only embeds the user's query at runtime.** No vector database, no separate embeddings file, no webhook between portfolio and server.
+
+### Model
+
+| Field | Value |
+|:--|:--|
+| Model | `Snowflake/snowflake-arctic-embed-m-v1.5` |
+| Params | 110M |
+| Architecture | BERT (`feature-extraction` pipeline) |
+| Native dims | 768 |
+| Stored dims (Matryoshka truncated) | **256** |
+| Query prefix | `"Represent this sentence for searching relevant passages: "` |
+| License | Apache 2.0 |
+| Runtime | `@huggingface/transformers` v4+ (ONNX via WebGPU/CPU) |
+| Source | [Snowflake/snowflake-arctic-embed-m-v1.5 on HF](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) |
+
+Matryoshka truncation to 256 dims preserves ~99% of full-768 quality per Snowflake's published evaluation, while keeping the inlined fleet.json size in the ~400KB range (367 docs × 256 floats × ~6 chars per number).
+
+### Build-time pipeline (portfolio)
+
+```
+caseyjhand-portfolio/scripts/build-fleet-json.ts
+  1. Load MCP_SERVERS list from src/data/mcp-servers.ts
+  2. For each server (concurrent pool of 8):
+     - GET /mcp → server.{name, version, description}, auth.mode
+     - POST tools/list → [{ name, description }, ...]
+  3. Load embedding model (cached on subsequent builds)
+  4. For each tool and server:
+     - Embed `{name}: {description}` at 768 dims
+     - Truncate to first 256 dims (Matryoshka)
+     - Normalize to unit length (precomputed for cosine via dot product)
+  5. Write public/fleet.json with:
+     - Top-level: version "2", generatedAt, embeddingModel, embeddingDims, embeddingQueryPrefix
+     - Per-server: existing metadata + embedding: number[256]
+     - Per-tool: existing metadata + embedding: number[256]
+```
+
+Build cost: ~30-60s for ~367 documents on CPU including model load. Acceptable for a build that ships once per portfolio deploy.
+
+### Runtime pipeline (server)
+
+```
+cyanheads-mcp-server startup:
+  1. Fetch fleet.json from CATALOG_URL
+  2. Validate top-level schema (Zod). Verify embeddingModel matches expected. Refuse to load on mismatch.
+  3. Pack vectors as a single Float32Array of length (numDocs × 256) for cache locality
+  4. Build index: tool name → row offset; server name → row offset; row offset → metadata
+  5. Load @huggingface/transformers with the same model id
+  6. Start poll timer: every CATALOG_REFRESH_SECONDS, re-fetch; if generatedAt changed, swap in new vectors atomically
+
+cyanheads_search handler:
+  1. Prepend query prefix → embed query → truncate to 256 → normalize
+  2. Dot product against every row in the packed Float32Array (1 µs per row, ~0.4ms total for 367 rows)
+  3. Filter by category if requested
+  4. Sort descending, take top N
+  5. Return with score = cosine similarity (0-1 range)
+```
+
+### Refresh cadence
+
+The catalog changes only when Casey edits `caseyjhand-portfolio/src/data/mcp-servers.ts` and pushes — at most weekly, often less. The server polls hourly by default (`CATALOG_REFRESH_SECONDS=3600`). The freshness floor is "fleet.json change → up to 1 hour later, served on VPS." If we ever need faster propagation, a manual restart pulls immediately or a Cloudflare Pages deploy hook → VPS endpoint can push.
+
+No vector DB. No webhook required for v0. The fleet.json itself is the contract.
 
 ---
 
 ## Catalog Record Shape
 
-Each entry in the catalog mirrors the fleet KB frontmatter, extended with a `tools` array containing per-tool entries and a `installSnippets` map.
-
 ```ts
-/** Single tool entry inside a CatalogRecord. */
-interface CatalogTool {
-  /** Fully-qualified name: "<server_prefix>_<verb>_<noun>" (snake_case). */
-  name: string;
-  /** Human-readable description (matches the tool's registered description). */
-  description: string;
-  /** Brief (≤120 chars) summary for search results — derived from description if not set. */
-  brief: string;
-  /** Zod-derived JSON Schema for the tool's input (as plain object, not Zod instance). */
-  inputSchema: Record<string, unknown>;
-  /** Zod-derived JSON Schema for the tool's output. */
-  outputSchema: Record<string, unknown>;
-  /** Auth scopes required to call this tool, if any. */
-  authScopes: string[];
-  /** True if the tool mutates state. */
-  destructive: boolean;
-  /** True if the tool is marked as task: true. */
-  isTask: boolean;
+/** Top-level fleet.json payload. Version "2" introduces baked embeddings. */
+interface FleetPayload {
+  version: '2';
+  generatedAt: string;                  // ISO 8601 UTC
+  embeddingModel: string;               // e.g. "Snowflake/snowflake-arctic-embed-m-v1.5"
+  embeddingDims: number;                // e.g. 256
+  embeddingQueryPrefix: string;         // applied to query at runtime, never to docs
+  servers: CatalogRecord[];
 }
 
-/** Per-client install snippet. */
+/** A single tool entry, with its embedding inlined. */
+interface CatalogTool {
+  name: string;                         // snake_case (e.g. "earthquake_search")
+  description: string;
+  embedding: number[];                  // length === FleetPayload.embeddingDims, L2-normalized
+}
+
+/** A single fleet server record, with its embedding inlined. */
+interface CatalogRecord {
+  name: string;                         // github basename ("arxiv-mcp-server")
+  displayName: string;                  // "arXiv"
+  description: string;                  // from server.description on GET /mcp
+  category: 'research' | 'government' | 'public-data' | 'utility';
+  endpoint: string;                     // hosted URL, always present
+  npm: string;                          // "@cyanheads/arxiv-mcp-server"
+  github: string;
+  version: string;                      // captured at generation time
+  auth: string;                         // open string; currently "none"
+  embedding: number[];                  // length === FleetPayload.embeddingDims, L2-normalized
+  tools: CatalogTool[];
+}
+
+/** Install snippet — generated at describe-time from CatalogRecord, never stored in fleet.json. */
 interface InstallSnippet {
-  /** MCP client identifier. */
   client: ClientId;
-  /** Human-readable label for the install method. */
   label: string;
-  /**
-   * The install payload. Shape varies by client:
-   * - claude-desktop: JSON fragment to merge into `mcpServers` block
-   * - claude-code: CLI command string (e.g. `claude mcp add ...`)
-   * - cursor: JSON fragment for `.cursor/mcp.json` `mcpServers` block
-   * - cline: JSON fragment for Cline's MCP settings
-   */
   payload: string;
 }
 
-/** One fleet server record. */
-interface CatalogRecord {
-  /** Package name without scope (e.g. "arxiv-mcp-server"). */
-  name: string;
-  /** One-line description of what this server does. */
-  description: string;
-  /** Latest published version. */
-  version: string;
-  /** Lifecycle state. */
-  status: 'active' | 'deprecated' | 'experimental';
-  /** Thematic grouping for filter facets. */
-  category: string;
-  /** Whether this server is hosted at a cyanheads subdomain. */
-  hosted: boolean;
-  /** Subdomain prefix when hosted (e.g. "arxiv" → https://arxiv.api.cyanheads.com). */
-  subdomain?: string;
-  /** Connection URL for hosted deployments (HTTP SSE). */
-  connectionUrl?: string;
-  /** npm package name (scoped, e.g. "@cyanheads/arxiv-mcp-server"). */
-  npm: string;
-  /** Auth requirement for the hosted deployment. */
-  auth: 'none' | 'api-key' | 'jwt' | 'oauth';
-  /** Tool entries (populated from the server's tools/list response or static data). */
-  tools: CatalogTool[];
-  /** Per-client install snippets. One entry per supported client. */
-  installSnippets: InstallSnippet[];
-  /** ISO 8601 creation date (YYYY-MM-DD). */
-  created: string;
-  /** ISO 8601 last-updated timestamp. Set on catalog refresh. */
-  updatedAt: string;
-}
-
-/** Supported client identifiers. */
-type ClientId =
-  | 'claude-desktop'
-  | 'claude-code'
-  | 'cursor'
-  | 'cline';
+type ClientId = 'claude-desktop' | 'claude-code' | 'cursor' | 'cline';
 ```
+
+Embeddings are L2-normalized at build time so the runtime cosine similarity collapses to a dot product.
 
 ---
 
@@ -142,64 +179,33 @@ type ClientId =
 | `cursor` | JSON merge into `.cursor/mcp.json` `mcpServers` block | JSON object |
 | `cline` | JSON merge into Cline VS Code extension MCP settings | JSON object |
 
-Clients not in this list (Continue, Zed, VS Code native, etc.) are deferred to Phase 2. Cutoff rationale: Claude Desktop and Claude Code are the primary consumers of the cyanheads fleet; Cursor and Cline have large installed bases that use npm-served MCP servers. Adding a client requires only a new entry in the static registry and a new `ClientId` union member — no handler changes.
+Adding a client = one entry in the static registry + one `ClientId` union member. No handler changes.
 
 ### Registry location
 
-`src/services/catalog/snippets.ts` — a plain `Record<ClientId, (record: CatalogRecord) => InstallSnippet>` factory map, evaluated at catalog-build time. No runtime generation.
+`src/services/catalog/snippets.ts` — `Record<ClientId, (record: CatalogRecord) => InstallSnippet>`.
 
 ### Snippet formats
 
+All hosted servers use SSE transport.
+
 ```ts
-// claude-desktop — JSON fragment for mcpServers block
-{
-  client: 'claude-desktop',
-  label: 'Claude Desktop (JSON config)',
-  payload: JSON.stringify({
-    [record.name]: {
-      command: 'npx',
-      args: ['-y', record.npm],
-    }
-  }, null, 2),
-}
+// claude-desktop
+{ client: 'claude-desktop', label: 'Claude Desktop (JSON config)',
+  payload: JSON.stringify({ [record.name]: { type: 'sse', url: record.endpoint } }, null, 2) }
 
-// claude-code — CLI command
-{
-  client: 'claude-code',
-  label: 'Claude Code (CLI)',
-  payload: `claude mcp add ${record.name} -- npx -y ${record.npm}`,
-}
+// claude-code
+{ client: 'claude-code', label: 'Claude Code (CLI)',
+  payload: `claude mcp add --transport sse ${record.name} ${record.endpoint}` }
 
-// cursor — JSON fragment for .cursor/mcp.json
-{
-  client: 'cursor',
-  label: 'Cursor (mcp.json)',
-  payload: JSON.stringify({
-    mcpServers: {
-      [record.name]: {
-        command: 'npx',
-        args: ['-y', record.npm],
-      }
-    }
-  }, null, 2),
-}
+// cursor
+{ client: 'cursor', label: 'Cursor (mcp.json)',
+  payload: JSON.stringify({ mcpServers: { [record.name]: { type: 'sse', url: record.endpoint } } }, null, 2) }
 
-// cline — JSON fragment for Cline MCP settings
-{
-  client: 'cline',
-  label: 'Cline (VS Code)',
-  payload: JSON.stringify({
-    [record.name]: {
-      command: 'npx',
-      args: ['-y', record.npm],
-      disabled: false,
-      autoApprove: [],
-    }
-  }, null, 2),
-}
+// cline
+{ client: 'cline', label: 'Cline (VS Code)',
+  payload: JSON.stringify({ [record.name]: { type: 'sse', url: record.endpoint, disabled: false, autoApprove: [] } }, null, 2) }
 ```
-
-Hosted servers substitute `command: 'npx'` / `args` with `type: 'sse'` / `url: record.connectionUrl` in the JSON payloads where the client supports SSE transport. Claude Code hosted variant: `claude mcp add --transport sse ${record.name} ${record.connectionUrl}`.
 
 ---
 
@@ -207,7 +213,7 @@ Hosted servers substitute `command: 'npx'` / `args` with `type: 'sse'` / `url: r
 
 ### `cyanheads_search`
 
-**Description:** Search fleet tools and servers by description. Returns ranked matches with brief summaries and the server each tool belongs to. Use `scope: 'servers'` to find which server handles a workflow; use the default `scope: 'tools'` to find specific tools.
+**Description:** Search fleet tools and servers by natural-language description. Returns ranked matches with brief summaries and the server each tool belongs to. Use `scope: 'servers'` to find which server handles a workflow; default `scope: 'tools'` to find specific tools.
 
 **Input schema:**
 
@@ -219,12 +225,11 @@ z.object({
   scope: z.enum(['tools', 'servers']).default('tools').describe(
     'What to search. "tools" returns individual tool matches; "servers" returns server-level matches.'
   ),
-  category: z.string().optional().describe(
-    'Filter by catalog category (e.g. "external-data", "local-workspace", "infrastructure"). ' +
-    'Omit to search all categories.'
+  category: z.enum(['research', 'government', 'public-data', 'utility']).optional().describe(
+    'Filter by catalog category. Omit to search all categories.'
   ),
   limit: z.number().int().min(1).max(20).default(5).describe(
-    'Maximum number of results to return (1–20). Default 5.'
+    'Maximum number of results to return (1-20). Default 5.'
   ),
 })
 ```
@@ -238,657 +243,277 @@ z.object({
       'Tool name (snake_case) or server name (kebab-case) depending on scope.'
     ),
     server: z.string().describe(
-      'Server package name that owns this tool (e.g. "arxiv-mcp-server"). ' +
-      'Same as name when scope is "servers".'
+      'Server package name that owns this tool. Same as name when scope is "servers".'
     ),
     brief: z.string().describe('One-line summary of what this tool or server does.'),
-    category: z.string().describe('Catalog category for the owning server.'),
+    category: z.enum(['research', 'government', 'public-data', 'utility']).describe(
+      'Catalog category for the owning server.'
+    ),
     score: z.number().describe(
-      'Relative match quality. Higher is better within a single response. ' +
-      'The scale changes between Phase 1 (token overlap count) and Phase 2 ' +
-      '(cosine similarity 0–1); see the phase field to interpret.'
+      'Cosine similarity between query and entry, 0-1. Higher is better. Compare only within a single response.'
     ),
   })).describe('Ranked matches, best first.'),
-  totalMatched: z.number().describe('Total entries that matched before limit was applied.'),
+  totalMatched: z.number().describe('Total relevant matches before the limit was applied.'),
   query: z.string().describe('The query that was searched.'),
   scope: z.enum(['tools', 'servers']).describe('Scope that was searched.'),
-  phase: z.enum(['fulltext', 'semantic']).describe(
-    'Search mode active for this response. "fulltext": Phase 1 token overlap, ' +
-    'score is an integer count. "semantic": Phase 2 vector similarity, score is ' +
-    'a float 0–1. Do not compare scores across responses with different phase values.'
-  ),
 })
 ```
+
+**Notes:**
+- No `phase` field. Output shape is stable; score is always cosine similarity.
+- `totalMatched` reflects post-threshold count. A configurable minimum similarity (default `SIMILARITY_FLOOR=0.3`) suppresses noise from cold queries; results below the floor don't appear in `results` or `totalMatched`.
 
 **Error contract:**
 
 ```ts
 errors: [
-  {
-    reason: 'no_results',
-    code: JsonRpcErrorCode.NotFound,
-    when: 'Query returns zero matches across the full catalog',
-    recovery: 'Broaden the query, remove category filter, or try scope "servers" to find the right server first.',
-  },
-  {
-    reason: 'catalog_empty',
-    code: JsonRpcErrorCode.ServiceUnavailable,
-    when: 'Catalog has not been initialized (startup race or static data missing)',
-    recovery: 'Retry in a few seconds; the catalog initializes asynchronously at server startup.',
-    retryable: true,
-  },
+  { reason: 'no_results', code: JsonRpcErrorCode.NotFound,
+    when: 'Query produced no relevant matches.',
+    recovery: 'Broaden the query, remove the category filter, or try scope "servers" to find the right server first.' },
+  { reason: 'catalog_empty', code: JsonRpcErrorCode.ServiceUnavailable,
+    when: 'Catalog has not finished loading.',
+    recovery: 'Retry in a few seconds; the catalog is still loading.',
+    retryable: true },
 ]
 ```
 
-**`format()` (parity requirement):** Every field in `output` must appear in the rendered `content[]` text — the framework's `format-parity` lint enforces this. For `cyanheads_search`, each result item must render `name`, `server`, `brief`, `category`, and `score`. The `totalMatched`, `query`, `scope`, and `phase` fields must also appear (e.g., in a header line). Omitting any of these will fail `bun run devcheck`.
+**`format()` parity:** renders `query`, `scope`, `totalMatched`, and each result's `name`, `server`, `brief`, `category`, `score`. Lint-enforced.
 
-**Auth:** none (public deployment); `tool:cyanheads_search:read` on gateway deployment.
-
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
-
-**Example call:**
-
-```json
-{
-  "tool_name": "cyanheads_search",
-  "input": {
-    "query": "fetch earthquake data and filter by magnitude",
-    "scope": "tools",
-    "limit": 5
-  }
-}
-```
-
-**Example response (Phase 1 fulltext):**
-
-```json
-{
-  "results": [
-    {
-      "name": "earthquake_search",
-      "server": "earthquake-mcp-server",
-      "brief": "Query USGS/EMSC seismic events by location, magnitude, and time range.",
-      "category": "external-data",
-      "score": 4
-    },
-    {
-      "name": "earthquake_get_feed",
-      "server": "earthquake-mcp-server",
-      "brief": "Fetch real-time USGS earthquake feed (CDN-cached, no quota cost).",
-      "category": "external-data",
-      "score": 3
-    }
-  ],
-  "totalMatched": 2,
-  "query": "fetch earthquake data and filter by magnitude",
-  "scope": "tools",
-  "phase": "fulltext"
-}
-```
-
----
+**Auth:** none in v0. Scope `tool:cyanheads_search:read` if/when auth is enabled.
 
 ### `cyanheads_describe`
 
-**Description:** Return the full schema, connection URL, and per-client install snippets for a named tool or server. For tools: input/output JSON Schema, parameter descriptions, and the server it belongs to. For servers: connection URL and install snippets for every supported client (or one specific client when `client` is specified). Call `cyanheads_search` first to find valid names.
+**Description:** Return the description, connection URL, and per-client install snippets for a named tool or server. For tools: the description and the server it belongs to. For servers: connection URL and install snippets for every supported client (or one specific client when `client` is specified). Call `cyanheads_search` first to find valid names.
 
 **Input schema:**
 
 ```ts
 z.object({
   name: z.string().min(1).describe(
-    'Tool name (snake_case, e.g. "earthquake_search") or server name ' +
-    '(kebab-case, e.g. "earthquake-mcp-server").'
+    'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server").'
   ),
   kind: z.enum(['tool', 'server']).optional().describe(
-    'Whether name refers to a tool or server. Omit to auto-detect: names containing ' +
-    'underscores are treated as tools; names containing hyphens are treated as servers.'
+    'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
   ),
   client: z.enum(['claude-desktop', 'claude-code', 'cursor', 'cline']).optional().describe(
-    'Return the install snippet for this specific client only. ' +
-    'Omit to return snippets for all supported clients.'
+    'Return the install snippet for this specific client only. Omit for all supported clients.'
   ),
 })
 ```
 
-**Output schema:**
+**Output schema** — `z.object({ result: z.discriminatedUnion('kind', [...]) })`. The framework's `tool()` requires a top-level `ZodObject`; the discriminated union is wrapped in `result` so `format()` can dispatch on `result.kind`. Branches as documented in `describe.tool.ts`.
 
-> [REVIEW]: The two optional branches (`tool` / `server`) create a `format-parity` problem at implementation time. `format()` is called once with a single runtime value, but the linter walks both `.optional()` branches and expects every field in each to appear in the rendered text. This will produce `format-parity` lint errors unless you use `z.discriminatedUnion` keyed on `kind`, which lets the linter walk each branch independently and `format()` dispatch on `result.kind`. Consider switching to the shape below before scaffolding. Left as `[REVIEW]` because it changes the Zod schema structure.
-
-```ts
-// Recommended: discriminated union so the linter walks each branch separately
-// and format() can dispatch cleanly on result.kind.
-z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('tool').describe('Resolved as a tool entry.'),
-    name: z.string().describe('Resolved name (as looked up).'),
-    description: z.string().describe('Full tool description.'),
-    server: z.string().describe('Server that owns this tool.'),
-    inputSchema: z.record(z.unknown()).describe('JSON Schema for the tool input object.'),
-    outputSchema: z.record(z.unknown()).describe('JSON Schema for the tool output object.'),
-    authScopes: z.array(z.string()).describe('Required auth scopes, if any.'),
-    destructive: z.boolean().describe('True if the tool has destructiveHint: true.'),
-    isTask: z.boolean().describe('True if the tool is a background task (task: true).'),
-  }),
-  z.object({
-    kind: z.literal('server').describe('Resolved as a server entry.'),
-    name: z.string().describe('Resolved name (as looked up).'),
-    description: z.string().describe('Full server description.'),
-    version: z.string().describe('Latest published version.'),
-    npm: z.string().describe('npm package name (e.g. "@cyanheads/arxiv-mcp-server").'),
-    connectionUrl: z.string().optional().describe(
-      'HTTP SSE endpoint for hosted deployments. Absent for servers with no hosted instance.'
-    ),
-    auth: z.string().describe(
-      'Auth requirement for the hosted deployment ("none", "api-key", etc.).'
-    ),
-    toolCount: z.number().describe('Number of tools exposed by this server.'),
-    installSnippets: z.array(z.object({
-      client: z.string().describe('Client identifier.'),
-      label: z.string().describe('Human-readable install method label.'),
-      payload: z.string().describe('Install payload (JSON or CLI command).'),
-    })).describe('Install instructions, one per supported client (or filtered by input.client).'),
-  }),
-])
-```
-
-**Error contract:**
-
-```ts
-errors: [
-  {
-    reason: 'not_found',
-    code: JsonRpcErrorCode.NotFound,
-    when: 'No tool or server with the given name exists in the catalog',
-    recovery: 'Use cyanheads_search to find the correct name, then call cyanheads_describe again.',
-  },
-  {
-    reason: 'ambiguous_kind',
-    code: JsonRpcErrorCode.InvalidParams,
-    when: 'Name matches both a tool and a server (collision in catalog)',
-    recovery: 'Set the kind parameter to "tool" or "server" to disambiguate.',
-  },
-  {
-    reason: 'catalog_empty',
-    code: JsonRpcErrorCode.ServiceUnavailable,
-    when: 'Catalog not yet initialized',
-    recovery: 'Retry in a few seconds; the catalog initializes at server startup.',
-    retryable: true,
-  },
-]
-```
-
-**`format()` (parity requirement):** With `z.discriminatedUnion`, the linter walks each branch independently. The `format()` function dispatches on `result.kind` and renders all fields in the matching branch. For the `'tool'` branch: `name`, `description`, `server`, `inputSchema`, `outputSchema`, `authScopes`, `destructive`, `isTask`. For the `'server'` branch: `name`, `description`, `version`, `npm`, `connectionUrl` (when present), `auth`, `toolCount`, each `installSnippets` entry's `client`, `label`, `payload`.
-
-**Auth:** none (public deployment); `tool:cyanheads_describe:read` on gateway deployment.
-
-**Annotations:** `readOnlyHint: true`, `openWorldHint: false`
-
-**Example call:**
-
-```json
-{
-  "tool_name": "cyanheads_describe",
-  "input": {
-    "name": "earthquake-mcp-server",
-    "kind": "server",
-    "client": "claude-code"
-  }
-}
-```
-
-**Example response (truncated):**
-
-```json
-{
-  "name": "earthquake-mcp-server",
-  "kind": "server",
-  "server": {
-    "description": "Search USGS and EMSC seismic data — real-time feeds, event queries, and earthquake counts.",
-    "version": "0.1.8",
-    "npm": "@cyanheads/earthquake-mcp-server",
-    "connectionUrl": "https://earthquake.api.cyanheads.com/mcp",
-    "auth": "none",
-    "toolCount": 4,
-    "installSnippets": [
-      {
-        "client": "claude-code",
-        "label": "Claude Code (CLI)",
-        "payload": "claude mcp add earthquake-mcp-server -- npx -y @cyanheads/earthquake-mcp-server"
-      }
-    ]
-  }
-}
-```
-
----
-
-### `cyanheads_invoke`
-
-**Description:** Dispatch a tool call to the fleet backend that owns the named tool. The input is validated against the backend's published input schema before forwarding. Backend errors are returned with their original error code and message. Only available when the server is running as a passthrough gateway (`ENABLE_INVOKE=true`). Use `cyanheads_search` to find a tool name, `cyanheads_describe` to inspect its input schema, then call `cyanheads_invoke` to execute it.
-
-**Input schema:**
-
-```ts
-z.object({
-  tool_name: z.string().min(1).describe(
-    'Fully-qualified tool name as returned by cyanheads_search (e.g. "earthquake_search"). ' +
-    'Must exist in the catalog.'
-  ),
-  input: z.record(z.unknown()).describe(
-    'Arguments for the tool. Must conform to the tool\'s input schema — use cyanheads_describe ' +
-    'to inspect required fields before calling.'
-  ),
-})
-```
-
-**Output schema:**
-
-```ts
-z.object({
-  tool_name: z.string().describe('The tool that was invoked.'),
-  server: z.string().describe('Server that handled the call.'),
-  result: z.record(z.unknown()).describe(
-    'Structured result as returned by the backend tool (structuredContent). ' +
-    'Shape matches the tool\'s output schema.'
-  ),
-  content: z.array(z.object({
-    type: z.string().describe('Content type ("text", "image", etc.).'),
-    text: z.string().optional().describe('Text content when type is "text".'),
-  })).describe('Formatted content from the backend tool (content[]).'),
-  latencyMs: z.number().describe('Round-trip time to the backend in milliseconds.'),
-})
-```
-
-**Error contract:**
-
-```ts
-errors: [
-  {
-    // NOTE: The correct code here depends on the resolution of Open Question 1.
-    // If the tool is OMITTED from tools/list when disabled, this error never fires
-    // and this entry can be dropped entirely.
-    // If the tool IS in tools/list but returns an error when disabled,
-    // MethodNotFound (-32601) is semantically wrong — the method exists on the server.
-    // InvalidRequest (-32600) is the correct code for "this operation is not supported
-    // in the current deployment configuration."
-    reason: 'invoke_disabled',
-    code: JsonRpcErrorCode.InvalidRequest,
-    when: 'ENABLE_INVOKE is not set or is false',
-    recovery: 'This deployment does not support invoke. Connect to the passthrough gateway endpoint instead.',
-  },
-  {
-    reason: 'tool_not_found',
-    code: JsonRpcErrorCode.NotFound,
-    when: 'tool_name does not exist in the catalog',
-    recovery: 'Use cyanheads_search to find the correct tool name, then retry.',
-  },
-  {
-    reason: 'input_invalid',
-    code: JsonRpcErrorCode.InvalidParams,
-    when: 'input fails validation against the backend tool\'s published input schema',
-    recovery: 'Use cyanheads_describe to inspect the required input schema for this tool, fix the input, and retry.',
-  },
-  {
-    reason: 'backend_error',
-    code: JsonRpcErrorCode.InternalError,
-    when: 'Backend returned a non-success MCP error',
-    recovery: 'The backend tool reported an error. Check the error message for tool-specific recovery guidance.',
-  },
-  {
-    reason: 'backend_unreachable',
-    code: JsonRpcErrorCode.ServiceUnavailable,
-    when: 'Backend MCP server did not respond within the configured timeout',
-    recovery: 'The backend server may be down. Try again in a few minutes or check the server\'s status.',
-    retryable: true,
-  },
-  {
-    reason: 'recursion_guard',
-    code: JsonRpcErrorCode.InvalidRequest,
-    when: 'tool_name routes back to cyanheads-mcp-server itself (loop prevention)',
-    recovery: 'Do not invoke cyanheads tools via cyanheads_invoke — call them directly.',
-  },
-]
-```
-
-**`format()` (parity requirement):** The `format()` function must render all output fields: `tool_name`, `server`, `latencyMs`, and the `content[]` items from the backend. The `result` field is `z.record(z.unknown())` with no declared subfields, so it's exempt from sentinel parity — but the field itself must still appear (e.g., rendered as a JSON block). The `content` array's inner fields (`type`, `text`) must also appear in `format()` output for any response path that includes them.
-
-**Auth:** `tool:cyanheads_invoke:execute` (gateway deployment only; `MCP_AUTH_MODE=jwt` or `oauth`).
-
-**Annotations:** `destructiveHint: true`, `openWorldHint: true`
-
-**Example call:**
-
-```json
-{
-  "tool_name": "cyanheads_invoke",
-  "input": {
-    "tool_name": "earthquake_get_feed",
-    "input": { "period": "day", "min_magnitude": 4.5 }
-  }
-}
-```
+**Error contract:** `not_found`, `ambiguous_kind`, `catalog_empty`. See `describe.tool.ts` for full text.
 
 ---
 
 ## Resources
 
-No resources are defined. Rationale: the catalog data has no stable addressable URI that a client would bookmark or inject as context — the primary access pattern is interactive search, not direct URI lookup. A hypothetical `fleet://catalog` dump would be unscoped and too large to be useful as injected context. All catalog data is reachable via tools.
+None. The catalog has no stable per-record URI worth bookmarking, and a `fleet://catalog` dump would be too large and unscoped to be useful injected context. All catalog data is reachable via the two tools above.
 
 ---
 
 ## Service Layer
 
-### CatalogService
+### `CatalogService`
 
-Owns the in-memory catalog. Phase 1: seeded from a static TypeScript module at startup. Phase 2: populated from Cloudflare KV, refreshed by a scheduled handler.
+Owns the in-memory catalog and search.
 
 ```ts
-/** Phase 1 in-memory, Phase 2 KV-backed. */
 interface ICatalogService {
-  /** Initialize from static data (Phase 1) or KV + Vectorize (Phase 2). */
+  /** Fetch fleet.json, validate, build vector index, load embedding model. */
   initialize(): Promise<void>;
 
-  /** Full-text search across tool and server descriptions (Phase 1). */
-  searchFullText(params: {
+  /** Semantic search. Embeds query, dot products against in-memory vectors. */
+  search(params: {
     query: string;
     scope: 'tools' | 'servers';
-    category?: string;
+    category?: CatalogCategory;
     limit: number;
   }): Promise<CatalogSearchResult[]>;
 
-  /**
-   * Semantic vector search (Phase 2).
-   * Throws UnsupportedOperation in Phase 1.
-   */
-  searchSemantic(params: {
-    queryEmbedding: number[];
-    scope: 'tools' | 'servers';
-    category?: string;
-    limit: number;
-  }): Promise<CatalogSearchResult[]>;
-
-  /** Look up a tool by exact name. Returns null if not found. */
+  /** Exact lookup. */
   getTool(name: string): CatalogTool & { serverRecord: CatalogRecord } | null;
-
-  /** Look up a server by exact name. Returns null if not found. */
   getServer(name: string): CatalogRecord | null;
 
-  /** List all category strings present in the catalog. */
-  listCategories(): string[];
+  /** List all categories present in the catalog. */
+  listCategories(): CatalogCategory[];
 
-  /** Total number of tools and servers in the catalog. */
-  stats(): { toolCount: number; serverCount: number; initializedAt: string };
+  /** Catalog metadata for diagnostics. */
+  stats(): { toolCount: number; serverCount: number; initializedAt: string; embeddingModel: string };
 }
+
+type CatalogCategory = 'research' | 'government' | 'public-data' | 'utility';
 
 interface CatalogSearchResult {
   name: string;
   server: string;
   brief: string;
-  category: string;
-  /** Phase 1: integer token overlap. Phase 2: float cosine similarity. */
-  score: number;
+  category: CatalogCategory;
+  score: number;   // cosine similarity 0-1
 }
 ```
 
-### EmbeddingsProvider (Phase 2 only)
+### `EmbeddingsRuntime`
+
+Wraps `@huggingface/transformers`'s `feature-extraction` pipeline. Single instance, loaded once at startup, kept warm.
 
 ```ts
-/** Deferred to Phase 2. */
-interface IEmbeddingsProvider {
-  /** Embed a string to a float32 vector. */
-  embed(text: string): Promise<number[]>;
-  /** Embed a batch of strings. */
-  embedBatch(texts: string[]): Promise<number[][]>;
-  /** Model identifier (e.g. "@cf/baai/bge-base-en-v1.5"). */
+interface IEmbeddingsRuntime {
+  /** Model id this runtime is loaded with. Must match FleetPayload.embeddingModel. */
   readonly modelId: string;
+
+  /** Embed a query string. Applies the query prefix and Matryoshka truncation. Returns an L2-normalized vector. */
+  embedQuery(text: string, dims: number, queryPrefix: string): Promise<Float32Array>;
 }
 ```
 
-### McpClientPool (Phase 2 only)
+The runtime is shared between the catalog initialization sanity-check (verifies model loads) and the search hot path.
 
-Manages MCP client connections to fleet backends for `invoke` dispatch.
+### `RemoteJsonCatalogProvider`
 
-```ts
-/** Deferred to Phase 2. */
-interface IMcpClientPool {
-  /** Acquire (or reuse) a client connection for a server. */
-  acquire(serverName: string): Promise<McpClientHandle>;
-  /** Release a client back to the pool. */
-  release(handle: McpClientHandle): void;
-  /** Call a tool on a backend server. */
-  callTool(params: {
-    serverName: string;
-    toolName: string;
-    input: Record<string, unknown>;
-    signal?: AbortSignal;
-  }): Promise<{ result: Record<string, unknown>; content: ContentItem[]; latencyMs: number }>;
-}
-
-interface McpClientHandle {
-  readonly serverName: string;
-  readonly connectionUrl: string;
-}
-```
-
----
-
-## Static Catalog Module (Phase 1)
-
-`src/services/catalog/static-catalog.ts` — a hand-curated array of `CatalogRecord` objects, one entry per active fleet server. Each entry is authored against the KB frontmatter (matching `name`, `description`, `version`, `category`, `subdomain`, `npm`, `auth`) plus the `tools`, `installSnippets`, `created`, and `updatedAt` fields.
-
-The static module is the Phase 1 source of truth. Updating the fleet adds an entry here. Phase 2 migrates to KV-backed auto-refresh from `tools/list`.
-
-Initial seed: every server with `status: active` in `kb/fleet/servers/` that has at least one tool.
+Unchanged from the pre-pivot version — fetches `CATALOG_URL`, validates with Zod, returns the payload. The Zod schema now requires the v2 fields (`embeddingModel`, `embeddingDims`, `embeddingQueryPrefix`, per-record `embedding`).
 
 ---
 
 ## Config / Env Vars
 
-`src/config/server-config.ts`:
-
-```ts
-const ServerConfigSchema = z.object({
-  /**
-   * Enables the `invoke` tool and MCP client pool.
-   * Public deployment: unset or "false".
-   * Gateway deployment: "true".
-   */
-  enableInvoke: z.coerce.boolean().default(false),
-
-  /**
-   * Cloudflare Vectorize index name (Phase 2).
-   * Required when enableInvoke is true and running on Workers.
-   */
-  vectorizeIndex: z.string().optional(),
-
-  /**
-   * Cloudflare Workers AI model for embeddings (Phase 2).
-   * Default: "@cf/baai/bge-base-en-v1.5".
-   */
-  embeddingModel: z.string().default('@cf/baai/bge-base-en-v1.5'),
-
-  /**
-   * Timeout in milliseconds for backend invoke calls (Phase 2).
-   * Default: 30000 (30s).
-   */
-  invokeTimeoutMs: z.coerce.number().default(30000),
-});
-
-export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    enableInvoke: 'ENABLE_INVOKE',
-    vectorizeIndex: 'VECTORIZE_INDEX',
-    embeddingModel: 'EMBEDDING_MODEL',
-    invokeTimeoutMs: 'INVOKE_TIMEOUT_MS',
-  });
-  return _config;
-}
-```
-
-**Complete env var table:**
-
 | Env Var | Required | Default | Description |
 |:--------|:---------|:--------|:------------|
-| `ENABLE_INVOKE` | No | `false` | Enables `invoke` tool and MCP client pool. Set to `true` for gateway deployment. |
-| `VECTORIZE_INDEX` | Phase 2 only | — | Cloudflare Vectorize index name for semantic search. |
-| `EMBEDDING_MODEL` | No | `@cf/baai/bge-base-en-v1.5` | Workers AI model for embedding generation. |
-| `INVOKE_TIMEOUT_MS` | No | `30000` | Per-call timeout for backend dispatch (ms). |
-| `MCP_AUTH_MODE` | No | `none` | `none` for public deployment; `jwt` or `oauth` for gateway. |
-| `MCP_AUTH_SECRET_KEY` | When `MCP_AUTH_MODE=jwt` | — | JWT signing secret. |
+| `CATALOG_URL` | No | `https://caseyjhand.com/fleet.json` | Remote fleet.json endpoint. Must return a valid `FleetPayload` (version "2"). |
+| `CATALOG_FETCH_TIMEOUT_MS` | No | `10000` | HTTP fetch timeout. |
+| `CATALOG_REFRESH_SECONDS` | No | `3600` | Background poll interval. Server re-fetches and swaps if `generatedAt` changed. |
+| `EMBEDDING_MODEL_ID` | No | `Snowflake/snowflake-arctic-embed-m-v1.5` | Must match `FleetPayload.embeddingModel`; mismatch is a startup error. |
+| `SIMILARITY_FLOOR` | No | `0.3` | Minimum cosine similarity for a result to appear in `cyanheads_search` output. |
+| `MCP_AUTH_MODE` | No | `none` | Framework default for v0 public discovery. |
 
-Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, etc.) are managed by `@cyanheads/mcp-ts-core` and not duplicated here.
+Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, …) are owned by `@cyanheads/mcp-ts-core`.
 
 ---
 
 ## Auth Model
 
-| Deployment | `MCP_AUTH_MODE` | Tool scope checks |
-|:-----------|:----------------|:------------------|
-| Public discovery | `none` | Scopes not enforced; `auth` field on tool definitions is present but `MCP_AUTH_DISABLE_SCOPE_CHECKS=true` effectively applies. |
-| Gateway | `jwt` or `oauth` | Scopes enforced: `tool:cyanheads_search:read`, `tool:cyanheads_describe:read`, `tool:cyanheads_invoke:execute` |
-
-Scope naming follows the framework convention: `tool:<snake_tool_name>:<verb>`.
-
-For the gateway deployment, per-tenant quotas (Phase 2) are enforced in `CatalogService` / `McpClientPool` using `ctx.tenantId` from the JWT `tid` claim. Tenant ID resolution follows framework defaults (stdio → `'default'`; HTTP + auth → JWT `tid` claim).
+v0 ships as `MCP_AUTH_MODE=none`. The hosted endpoint is a public discovery surface — no JWT, no scope checks, no per-tenant state. Tool definitions still carry `auth: ['tool:cyanheads_search:read']` etc. so a future gateway deployment can toggle JWT/oauth and have scope enforcement work without code changes.
 
 ---
 
 ## Storage and Infrastructure
 
-### Phase 1
-
 | Layer | Tech | Notes |
 |:------|:-----|:------|
-| Catalog | In-memory (static TS module) | No runtime dependencies. Works in stdio and HTTP. |
-| Search | Full-text token overlap | Pure TS, no external deps. |
-| Persistence | None | No `ctx.state` usage in Phase 1. |
+| Catalog source | `https://caseyjhand.com/fleet.json` on Cloudflare Pages | Static asset, regenerated by `caseyjhand-portfolio/scripts/build-fleet-json.ts` on every portfolio deploy. |
+| Embedding production | Portfolio build script, `@huggingface/transformers` | Document vectors baked into fleet.json. Build container is CPU; model weights cached between builds where possible. |
+| Catalog in server | In-memory Float32Array (packed) + Maps for name lookup | One fetch at startup, polled every hour. Atomic swap on change. |
+| Query embedding | `@huggingface/transformers` loaded once at startup | CPU inference, ~30-50ms per query on the VPS. |
+| Search | In-memory dot product over ~367 normalized vectors | Sub-millisecond for the full sweep. |
+| Persistence | None | No `ctx.state`. Stateless aside from the cached catalog. |
 
-### Phase 2
+No Cloudflare Workers, Vectorize, KV, D1, or Durable Objects. The server runs on the same VPS as the rest of the cyanheads fleet.
 
-| Layer | Tech | Notes |
-|:------|:-----|:------|
-| Catalog records | Cloudflare KV | Per-tool record keyed by `tool:<name>`. Per-server record keyed by `server:<name>`. |
-| Vector index | Cloudflare Vectorize | One namespace, indexed by tool name. Re-embed on description change only. |
-| Embeddings | Workers AI `bge-base-en-v1.5` | Fallback: Voyage AI or OpenAI. |
-| Analytics | Cloudflare D1 | Search query log, invoke call log, per-tenant quota tracking. |
-| MCP clients | `@modelcontextprotocol/sdk` `Client` | Pooled connections per backend server. |
-| Catalog refresh | Cloudflare Cron Trigger | Daily by default; configurable. Walks each backend's `tools/list`, diffs, re-embeds changed tools. |
+---
 
-Phase 1 ships with no KV/Vectorize/D1 bindings. Phase 2 adds `wrangler.toml` bindings and the `createWorkerHandler` path.
+## README Positioning
+
+The README serves the hosted endpoint, not the source tree. Order from top to bottom:
+
+1. **Headline:** what the endpoint does, the URL to add. Below the title before any other content.
+2. **Add it to your client:** the four install snippets (Claude Desktop, Claude Code, Cursor, Cline) presented as copy-paste blocks.
+3. **What's in the fleet:** category counts, sample queries, a visual or table.
+4. **How it works (one paragraph):** semantic search over a hosted catalog of MCP servers; agents ask "what handles X?" and get an install snippet for their client.
+5. **Self-hosting (collapsed or short):** for the rare cloner. Setup, env vars, build steps.
+
+Tone: landing page, not developer scaffold. The audience is engineers evaluating whether to plug in the endpoint — they want to know what it does, how to add it, what they get. Not how to fork it.
 
 ---
 
 ## Phasing
 
-### Phase 1 — Public Discovery
+### Phase 1 (this design)
 
-**What ships:**
-- `cyanheads_search` (full-text)
+- `cyanheads_search` (semantic, cosine similarity)
 - `cyanheads_describe`
-- Static catalog seeded from KB fleet entries
-- In-memory `CatalogService`
-- Per-client snippet registry (4 clients: claude-desktop, claude-code, cursor, cline)
-- `MCP_AUTH_MODE=none`
-- Works in stdio and HTTP
+- Remote fleet.json with baked embeddings, in-memory vector index
+- `@huggingface/transformers` query runtime
+- VPS deployment (stdio + HTTP)
+- Marketing-style README
+- Public, unauthenticated
 
-**What is deferred:**
-- `cyanheads_invoke` (conditionally present but guarded — returns `invoke_disabled` unless `ENABLE_INVOKE=true`)
-- Cloudflare Workers deployment
-- KV catalog, Vectorize semantic search, D1 analytics
-- Embeddings provider
-- MCP client pool
-- Catalog refresh scheduler
-- Per-tenant quotas and billing
+### Phase 2 (deferred)
 
-### Phase 2 — Passthrough Gateway
+- `cyanheads_invoke` passthrough dispatch (gateway shape)
+- `MCP_AUTH_MODE=jwt` or `oauth` with per-tenant scope enforcement
+- Per-tenant quotas and optional billing integration
+- MCP client pool for backend dispatch
+- Recursion guard, per-(tenant, tool) rate limiting
 
-**What activates:**
-- `ENABLE_INVOKE=true` → `cyanheads_invoke` becomes callable
-- Cloudflare Workers + KV + Vectorize deployment
-- Scheduled catalog refresh (daily cron)
-- Semantic search replaces full-text
-- `MCP_AUTH_MODE=jwt` or `oauth` with per-tenant quotas
-- D1 analytics schema and logging
-- `MCP_CLIENT_POOL_MAX_SIZE` and `INVOKE_TIMEOUT_MS` tuning — `MCP_CLIENT_POOL_MAX_SIZE` must be added to `ServerConfigSchema` and the env var table before Phase 2 scaffold
+Phase 2 is the only place `invoke` lands. Phase 1 does not register it.
 
 ---
 
 ## Implementation Order
 
-1. `src/config/server-config.ts` — Zod schema, `parseEnvConfig` wiring
-2. `src/services/catalog/static-catalog.ts` — seed data for ~5 fleet servers as a validation set
-3. `src/services/catalog/snippets.ts` — per-client snippet factory map
-4. `src/services/catalog/catalog-service.ts` — `ICatalogService` implementation (in-memory, fulltext)
-5. `src/mcp-server/tools/definitions/search.tool.ts` — `cyanheads_search`
-6. `src/mcp-server/tools/definitions/describe.tool.ts` — `cyanheads_describe`
-7. `src/mcp-server/tools/definitions/invoke.tool.ts` — `cyanheads_invoke` (guarded by `enableInvoke`, returns `invoke_disabled` if false)
-8. `src/index.ts` — wire all three tools into `createApp()`
-9. Tests — `createMockContext()` for all three tools
-10. `bun run devcheck`
+1. Update `src/services/catalog/types.ts` — v2 schema with embeddings.
+2. Update `src/services/catalog/remote-catalog-provider.ts` — new Zod schema, model-id check.
+3. Replace token-overlap logic in `src/services/catalog/catalog-service.ts` with packed Float32Array + cosine search; add startup model load + background poll.
+4. Add `src/services/catalog/embeddings-runtime.ts` — query embed pipeline.
+5. Update `src/mcp-server/tools/definitions/search.tool.ts` — drop `phase`, drop fulltext path, score becomes float.
+6. `src/mcp-server/tools/definitions/describe.tool.ts` — no structural change.
+7. Update `src/config/server-config.ts` — add `EMBEDDING_MODEL_ID`, `SIMILARITY_FLOOR`, `CATALOG_REFRESH_SECONDS`; drop unused vars.
+8. Update tests in `tests/services/catalog.service.test.ts` and `tests/tools/search.tool.test.ts` to use embedding fixtures.
+9. Rewrite README in marketing-style positioning.
+10. `bun run devcheck`.
+
+Portfolio side:
+
+1. `bun add @huggingface/transformers` in caseyjhand-portfolio.
+2. Update `scripts/build-fleet-json.ts` — model load, per-record embedding, Matryoshka truncation, L2 normalization, v2 payload.
+3. Run a local build to validate the output.
+4. Commit and push so the deployed fleet.json carries embeddings before the server attempts to load it.
 
 ---
 
 ## Decisions Log
 
-- **Phase 1 search is full-text, not semantic.** Vectorize requires Workers runtime. Phase 1 must run in stdio/HTTP without cloud binding dependencies. Full-text (token overlap over description strings) is sufficient for a curated fleet of ~30 servers with well-written descriptions. The `phase` field in search output signals to callers which mode is active — no API change required when Phase 2 lands.
+- **Semantic search is P0, not Phase 2.** Token overlap was sufficient as a "honest stub" but the hosted endpoint is the product. Shipping with fulltext degrades the experience that justifies the endpoint existing. Semantic at v0 closes the gap.
 
-- **`score` field uses different semantics per phase.** Documenting `phase` in the output avoids a breaking change when the score type changes (integer count → float similarity). Callers are warned in the field description not to compare across phase transitions.
+- **Snowflake/snowflake-arctic-embed-m-v1.5 over bge-small.** Arctic-embed-m-v1.5 is the direct size successor to bge-small in the retrieval-tuned class — better MTEB retrieval (~55 NDCG@10 vs bge-small's ~52), Matryoshka-enabled, Apache 2.0, ONNX weights published, `@huggingface/transformers` compatible. The size jump (110M vs 33M) is moderate and the VPS handles it comfortably.
 
-- **`invoke` is always present in the codebase but guarded at runtime.** Rather than `createApp()` conditionally omitting the tool, the handler returns `invoke_disabled` immediately when `enableInvoke` is false. This keeps the tool definition unconditional and avoids conditional registration logic that could mask the tool from tool-only agents in gateway deployments. The tool is simply not useful until the flag is set.
+- **Matryoshka 256 dims, not 768.** Snowflake's v1.5 training was designed for compressible truncation; published evaluation shows ~99% of full-dim retrieval quality at 256. The storage win is ~3x on the fleet.json side. Upgrade to 768 is a single constant change in the build script if quality ever bottlenecks.
 
-  _Devil's advocate:_ Conditionally omitting the tool from `tools/list` is cleaner — clients never see it in discovery deployment. Counter: a tool in the list with a clear error beats a tool that silently doesn't exist when `ENABLE_INVOKE` is accidentally false in a gateway deployment. Operator misconfiguration is the more likely failure. Revised: omit from `tools/list` in the public deployment (hide via `createApp` opts or a guard in the tool array), surface it in gateway. This needs resolution before build — see Open Questions.
+- **Embeddings live in fleet.json, not in a vector DB.** For 367 documents, an in-memory dot product sweep is sub-millisecond. A separate vector DB introduces a moving part (provisioning, refresh latency, schema sync) for no measurable benefit. The fleet.json is already the canonical catalog artifact; piggybacking embeddings onto it makes them version-controlled with the metadata and eliminates any race between catalog updates and vector updates.
 
-- **No `fleet://catalog` resource.** A resource dump of the full catalog is not a useful agent-injectable context unit — too large, no stable per-record URI, no query semantics. The search tool is the right access path.
+- **Document embeddings produced at portfolio build time, query embeddings at runtime.** Documents change rarely (per portfolio deploy) and are known at build time. Queries change every request and must be live. The split puts each inference at the right layer.
 
-- **Static catalog in Phase 1, not auto-populated from `tools/list`.** Auto-population requires: live connection to each backend at startup, error handling for unavailable backends, schema extraction, brief generation. For Phase 1, the manual effort of maintaining a static file is acceptable and eliminates runtime dependencies. The static module is the forcing function for writing good `brief` text, which full-text search depends on.
+- **Query prefix shipped in the payload, not hardcoded.** Snowflake's asymmetric pattern requires queries to be prefixed; documents don't. Shipping the prefix in `embeddingQueryPrefix` means swapping models (in the portfolio build) is a one-side change — the server reads whatever prefix the catalog declares.
 
-- **4-client v0 snippet registry, not 6+.** Claude Desktop, Claude Code, Cursor, and Cline cover the primary user base for the cyanheads fleet. Continue and Zed are adding MCP support but have smaller installed bases and evolving config formats. Adding a client is a one-line registry addition — no design change needed.
+- **L2 normalize at build time.** Pre-normalizing document vectors lets the runtime cosine similarity collapse to a dot product. Saves one division per row per query.
 
-- **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. This convention is enforced across the entire fleet. Auto-detection avoids requiring callers to specify `kind` in the common case. The assumption that no fleet server will ever use underscores in its package name is a structural dependency — see Open Question 8.
+- **Background poll, not webhook.** Catalog changes maybe weekly. An hourly poll is good enough for v0, requires zero new infrastructure, and is restartable to force fresh state. A Cloudflare Pages deploy hook → VPS endpoint is a clean upgrade path if propagation latency ever matters.
 
-- **`invoke` carries `destructiveHint: true`.** The tool dispatches to arbitrary fleet backends, some of which have `destructiveHint: true` themselves. The gateway can't know the downstream annotation at dispatch time without inspecting the catalog. Marking `invoke` itself destructive is the safe default — clients that gate on this flag will prompt before calling it.
+- **`cyanheads_invoke` excluded from Phase 1.** The gateway shape is real Phase 2 work — auth, quotas, MCP client pool, recursion guard, dispatch validation. Shipping it half-finished or stubbed in v0 dilutes the surface. Phase 1 = discovery only.
+
+- **README is marketing-shaped.** The hosted endpoint is the product. The README's job is to convince an evaluator the endpoint is worth one line in their client config. Self-hosting docs collapse to a bottom section.
+
+- **Catalog is hosted-only.** All entries in fleet.json come from the live `GET /mcp` + `tools/list` calls during the portfolio build. Non-hosted servers (npm-only utilities) are excluded from v0. Including them requires a parallel data source and is deferred.
+
+- **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. `CatalogService.initialize()` validates server names at load time and rejects entries with underscores so the heuristic stays reliable.
 
 ---
 
 ## Open Questions
 
-1. **`invoke` visibility in public deployment.** Design log entry above surfaced a real tension: should `invoke` appear in `tools/list` in the public (non-gateway) deployment at all? Two options: (a) omit from the tool array when `enableInvoke` is false (cleanest for clients); (b) include and return `invoke_disabled` error (better misconfiguration signal). Resolution needed before Phase 1 scaffold.
+1. **Cold-load latency on the VPS.** First request after restart pays the model-load cost (~2-5s for arctic-embed-m on CPU). Acceptable for an MCP server but worth measuring. If it's bad, we can warm-load during `initialize()` or expose a `/ready` probe.
 
-2. **Hosted connection URL scheme.** The catalog records use `subdomain` to construct `connectionUrl` (e.g. `https://${subdomain}.api.cyanheads.com/mcp`). The actual domain and path conventions for hosted deployments are not yet confirmed. The static catalog module should leave `connectionUrl` optional/undefined for Phase 1 and populate it when hosting is confirmed.
+2. **Build cache for the embedding model on Cloudflare Pages.** First portfolio build after `bun install` downloads the ONNX weights (~140MB quantized, ~440MB full). Whether Pages caches `~/.cache/huggingface/` across builds determines whether this is a one-time cost or a per-build penalty. Worth a single test build to find out.
 
-3. **Full-text search ranking.** Token overlap is naive — "earthquake earthquake earthquake" scores higher than "earthquake magnitude filter". Phase 1 is fine with this for a curated catalog, but if the fleet grows significantly before Phase 2 ships, a simple TF-IDF or BM25 implementation may be worth adding without the Vectorize migration.
+3. **Similarity floor calibration.** Default `0.3` is a guess. After a few real query patterns are observed, tune up or down based on the false-positive vs false-negative tradeoff.
 
-4. **`brief` field authoring.** The static catalog requires a `brief` (≤120 chars) per tool entry. This can be derived from the first sentence of the tool description, but some descriptions don't follow a one-sentence-first pattern. Decision needed: auto-derive with a 120-char truncation, or require explicit `brief` in the static data.
-
-5. **Snippet format for hosted SSE vs npx.** The snippet registry section documents both a `command: npx` variant and an `url: connectionUrl` SSE variant. For servers without a `connectionUrl`, the npx variant is always used. For hosted servers, the question is which variant to emit by default — or both. Needs a decision before snippet registry implementation.
-
-6. **Phase 2 pricing model.** Deferred per `idea.md`. No design work needed until Phase 1 telemetry is live.
-
-7. **Browse/list surface gap.** There is no tool for listing all servers without a query, or for listing valid category strings. `ICatalogService.listCategories()` exists at the service layer but has no corresponding tool. Agents that want to browse the full catalog or discover valid `category` filter values must issue a broad search or guess category strings. Flagged for the author to decide: add `cyanheads_list` or similar, or accept the gap for Phase 1.
-
-8. **`describe` auto-detection relies on a fleet naming invariant.** The heuristic "underscore → tool, hyphen → server" is documented as a consequence of fleet naming conventions, but it is not enforced by the catalog schema. A fleet server whose package name uses underscores (e.g., a hypothetical `pubmed_mcp_server`) would break the heuristic silently — `cyanheads_describe` would treat it as a tool. The static catalog's `CatalogRecord.name` field should be validated on load to assert hyphen-only names, or the heuristic should be documented as fleet-invariant with a load-time assertion in `CatalogService.initialize()`.
-
-9. **`cyanheads_invoke` in Phase 1.** The Phase 1 "What is deferred" list says `cyanheads_invoke` is "conditionally present but guarded." If the tool appears in `tools/list` in the public deployment, it is visible to every agent connecting to this server, including those that don't know about gateways. This is likely confusing. Resolution tied to Open Question 1 — decide before scaffold.
+4. **Adding npm-only servers later.** Roughly 25 servers in the wider cyanheads collection are npm-only (git, obsidian, clipboard, etc.). Including them needs `endpoint` to become optional, a separate ingestion path, and a UX decision about how `describe` returns "no hosted endpoint, run via npx." Deferred to a follow-up.
 
 ---
 
 ## Review Notes
 
-Changes made during review pass (reviewer had no access to `docs/idea.md`):
+This doc replaces the pre-pivot version. The earlier draft assumed Cloudflare Workers / Vectorize / KV / D1 for Phase 2 and token-overlap fulltext for Phase 1. Both assumptions were wrong: the server runs on the VPS like the rest of the fleet, and the hosted endpoint is the product so semantic must ship in v0.
 
-1. **`cyanheads_describe` output schema — flagged** (`[REVIEW]` blockquote): The two `.optional()` branches (`tool` / `server`) produce `format-parity` lint failures at scaffold time because the linter walks both branches and expects every field to appear in `format()`. Replaced with `z.discriminatedUnion('kind', [...])` in the design spec — each branch is walked independently, `format()` dispatches on `result.kind`. Author must confirm this structural change before scaffolding.
-
-2. **`invoke_disabled` error code — edited**: Changed from `JsonRpcErrorCode.MethodNotFound` (-32601) to `JsonRpcErrorCode.InvalidRequest` (-32600). `MethodNotFound` means the JSON-RPC method doesn't exist on the server — incorrect when the tool IS registered. `InvalidRequest` is the right code for "this operation is not supported in the current configuration." The inline comment in the error contract notes this is contingent on Open Question 1 resolution.
-
-3. **`format()` parity notes added** to all three tool specs. The design doc had no mention of `format()` for any tool, but the framework's `format-parity` lint rule requires every output field to appear in `content[]` text. Added a parity requirement note under each tool's spec calling out the specific fields that must be rendered.
-
-4. **`MCP_CLIENT_POOL_MAX_SIZE` missing from config table — flagged inline**: The Phase 2 section references this var but it is absent from `ServerConfigSchema` and the env var table. Added an inline note to the Phase 2 activation list.
-
-5. **Surface coverage gap — added as Open Question 7**: No tool exists to list all servers or enumerate valid `category` values without performing a search. `ICatalogService.listCategories()` exists at the service layer but has no tool exposure. Flagged for author decision — not designed.
-
-6. **`describe` auto-detection invariant — added as Open Question 8**: The underscore/hyphen heuristic is a structural dependency on a fleet naming constraint that is not enforced by the catalog schema or at load time. Added the invariant note to both the Decisions Log entry and the Open Questions list.
-
-7. **`score` field description — edited**: Removed "do not compare across Phase transitions" from the `score.describe()` text (that was internal implementation guidance, not caller-facing semantics) and clarified the `phase` field description to carry the interpretation guidance instead. The field still accurately describes how to read the score.
-
-8. **Open Question 9 added**: Calls out the contradiction between the Phase 1 "deferred" list (which says `invoke` is guarded) and the Decisions Log entry (which says the tool is always registered). These two positions need reconciliation before scaffold — linked back to Open Question 1.
+`cyanheads_invoke`, gateway auth, quotas, and MCP client pooling remain in Phase 2 but with no Cloudflare-specific commitments — they will run on the same VPS architecture.

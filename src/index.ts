@@ -1,21 +1,29 @@
 #!/usr/bin/env node
 /**
- * @fileoverview cyanheads-mcp-server MCP server entry point.
+ * @fileoverview cyanheads-mcp-server entry point — fleet discovery and passthrough gateway.
  * @module index
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
-import { echoTool } from './mcp-server/tools/definitions/echo.tool.js';
-import { echoAppTool } from './mcp-server/tools/definitions/echo-app.app-tool.js';
-import { echoResource } from './mcp-server/resources/definitions/echo.resource.js';
-import { echoAppUiResource } from './mcp-server/resources/definitions/echo-app-ui.app-resource.js';
-import { echoPrompt } from './mcp-server/prompts/definitions/echo.prompt.js';
+import { getServerConfig } from './config/server-config.js';
+import { describeTool } from './mcp-server/tools/definitions/describe.tool.js';
+import { searchTool } from './mcp-server/tools/definitions/search.tool.js';
+import { getCatalogService, initCatalogService } from './services/catalog/catalog-service.js';
 
 await createApp({
-  tools: [echoTool, echoAppTool],
-  resources: [echoResource, echoAppUiResource],
-  prompts: [echoPrompt],
-  // instructions: 'Server-level orientation forwarded to the model on every initialize.\n' +
-  //   '- Use shortcut `X` for the most common case\n' +
-  //   '- Tools require auth via the `inventory:read` scope',
+  name: 'cyanheads-mcp-server',
+  tools: [searchTool, describeTool],
+  resources: [],
+  prompts: [],
+  instructions:
+    'This server is the discovery front door to the cyanheads MCP fleet. ' +
+    'Use cyanheads_search to find tools or servers by describing what you want to do. ' +
+    'Use cyanheads_describe to get full schemas and per-client install snippets for any result. ' +
+    'Scope "tools" (default) finds individual tools; scope "servers" finds which server owns a workflow.',
+
+  async setup() {
+    const config = getServerConfig();
+    initCatalogService(config);
+    await getCatalogService().initialize();
+  },
 });
