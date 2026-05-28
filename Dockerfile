@@ -17,8 +17,9 @@ RUN bun install --frozen-lockfile
 # Copy the rest of the source code
 COPY . .
 
-# Build the application
-RUN bun run build
+# Build the application. Invoke Bun on the script directly; `bun run build` goes
+# through tsx, which trips a CJS resolver issue in Bun 1.3.x containers.
+RUN bun scripts/build.ts
 
 
 # ==============================================================================
