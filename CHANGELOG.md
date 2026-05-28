@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-05-28
+
+Await the embedding model warm-up at setup — the 0.1.7 fire-and-forget races with @opentelemetry/instrumentation-http installing its fetch wrap, leaving the cold-cache model download permanently broken; await keeps pipeline() inside the pre-OTEL window
+
 ## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-05-28
 
 Trigger the lazy model load from setup() instead of waiting for the first request — works around a transformers.js cold-cache failure when pipeline() runs inside an OTEL-instrumented request handler

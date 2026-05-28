@@ -78,20 +78,19 @@ export class CatalogService implements ICatalogService {
     );
 
     /**
-     * Background warm-up: trigger the embedding model load now, off the
-     * critical startup path. Running pipeline() from setup() succeeds where
-     * the same call from a request-handler context fails on a cold cache —
-     * OpenTelemetry HTTP instrumentation interferes with transformers.js's
-     * model fetch once the request scope is active. First user query awaits
-     * the in-flight _loadPromise instead of starting a fresh load.
+     * Eager warm-up: load the embedding model synchronously inside the setup
+     * window. `pipeline()` must run before `@opentelemetry/instrumentation-http`
+     * monkey-patches fetch — once the OTEL wrap is active, transformers.js
+     * cannot complete the cold-cache model download from any later context
+     * (verified against `Unable to get model file path or buffer` in 0.1.6 and
+     * 0.1.7). `embedQuery` triggers the runtime's lazy `_ensureLoaded`, so the
+     * model is fetched once here and stays warm for the process lifetime.
      */
-    void this._embeddings
-      .embedQuery('warmup', this._index.dims, this._index.payload.embeddingQueryPrefix)
-      .catch((err) => {
-        logger.warning(
-          `Background embedding warm-up failed; first cyanheads_search will retry. ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
+    await this._embeddings.embedQuery(
+      'warmup',
+      this._index.dims,
+      this._index.payload.embeddingQueryPrefix,
+    );
 
     if (this._config.catalogRefreshSeconds > 0) {
       this._refreshTimer = setInterval(() => {
