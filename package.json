@@ -1,7 +1,7 @@
 {
   "name": "@cyanheads/cyanheads-mcp-server",
   "mcpName": "io.github.cyanheads/cyanheads-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fleet discovery server for the cyanheads MCP ecosystem — semantic search for tools and install snippets.",
   "type": "module",
   "main": "dist/index.js",
