@@ -38,8 +38,9 @@ ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 LABEL org.opencontainers.image.title="cyanheads-mcp-server"
-LABEL org.opencontainers.image.description=""
+LABEL org.opencontainers.image.description="Fleet discovery server for the cyanheads MCP ecosystem."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/cyanheads/cyanheads-mcp-server"
 
 # Copy dependency manifests
 COPY package.json bun.lock ./

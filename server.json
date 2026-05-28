@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads/cyanheads-mcp-server",
-  "description": "Fleet discovery server for the cyanheads MCP ecosystem — search tools and servers, get schemas and install snippets.",
+  "name": "io.github.cyanheads/cyanheads-mcp-server",
+  "description": "Fleet discovery server for the cyanheads MCP ecosystem — semantic search for tools and install snippets.",
   "repository": {
     "url": "https://github.com/cyanheads/cyanheads-mcp-server",
     "source": "github"
@@ -11,83 +11,125 @@
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "cyanheads-mcp-server",
+      "identifier": "@cyanheads/cyanheads-mcp-server",
       "runtimeHint": "node",
       "version": "0.1.0",
       "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:stdio"
-        }
+        { "type": "positional", "value": "run" },
+        { "type": "positional", "value": "start:stdio" }
       ],
       "environmentVariables": [
         {
           "name": "MCP_LOG_LEVEL",
-          "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
+          "description": "Minimum log level: debug, info, notice, warning, error.",
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "CATALOG_URL",
+          "description": "Remote fleet.json endpoint (schema v2 with baked embeddings).",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://caseyjhand.com/fleet.json"
+        },
+        {
+          "name": "CATALOG_REFRESH_SECONDS",
+          "description": "Background poll interval for fleet.json refresh. 0 disables.",
+          "format": "string",
+          "isRequired": false,
+          "default": "3600"
+        },
+        {
+          "name": "EMBEDDING_MODEL_ID",
+          "description": "Hugging Face model id for query embedding. Must match fleet.json.embeddingModel.",
+          "format": "string",
+          "isRequired": false,
+          "default": "Snowflake/snowflake-arctic-embed-m-v1.5"
+        },
+        {
+          "name": "SIMILARITY_FLOOR",
+          "description": "Cosine similarity cutoff for cyanheads_search results (0-1).",
+          "format": "string",
+          "isRequired": false,
+          "default": "0.3"
         }
       ],
-      "transport": {
-        "type": "stdio"
-      }
+      "transport": { "type": "stdio" }
     },
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
-      "identifier": "cyanheads-mcp-server",
+      "identifier": "@cyanheads/cyanheads-mcp-server",
       "runtimeHint": "node",
       "version": "0.1.0",
       "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:http"
-        }
+        { "type": "positional", "value": "run" },
+        { "type": "positional", "value": "start:http" }
       ],
       "environmentVariables": [
         {
           "name": "MCP_HTTP_HOST",
-          "description": "The hostname for the HTTP server.",
+          "description": "Hostname for the HTTP server.",
           "format": "string",
           "isRequired": false,
           "default": "127.0.0.1"
         },
         {
           "name": "MCP_HTTP_PORT",
-          "description": "The port to run the HTTP server on.",
+          "description": "Port to run the HTTP server on.",
           "format": "string",
           "isRequired": false,
           "default": "3010"
         },
         {
           "name": "MCP_HTTP_ENDPOINT_PATH",
-          "description": "The endpoint path for the MCP server.",
+          "description": "Endpoint path for the MCP server.",
           "format": "string",
           "isRequired": false,
           "default": "/mcp"
         },
         {
           "name": "MCP_AUTH_MODE",
-          "description": "Authentication mode to use: 'none', 'jwt', or 'oauth'.",
+          "description": "Authentication mode: none, jwt, or oauth.",
           "format": "string",
           "isRequired": false,
           "default": "none"
         },
         {
           "name": "MCP_LOG_LEVEL",
-          "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
+          "description": "Minimum log level: debug, info, notice, warning, error.",
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "CATALOG_URL",
+          "description": "Remote fleet.json endpoint (schema v2 with baked embeddings).",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://caseyjhand.com/fleet.json"
+        },
+        {
+          "name": "CATALOG_REFRESH_SECONDS",
+          "description": "Background poll interval for fleet.json refresh. 0 disables.",
+          "format": "string",
+          "isRequired": false,
+          "default": "3600"
+        },
+        {
+          "name": "EMBEDDING_MODEL_ID",
+          "description": "Hugging Face model id for query embedding. Must match fleet.json.embeddingModel.",
+          "format": "string",
+          "isRequired": false,
+          "default": "Snowflake/snowflake-arctic-embed-m-v1.5"
+        },
+        {
+          "name": "SIMILARITY_FLOOR",
+          "description": "Cosine similarity cutoff for cyanheads_search results (0-1).",
+          "format": "string",
+          "isRequired": false,
+          "default": "0.3"
         }
       ],
       "transport": {

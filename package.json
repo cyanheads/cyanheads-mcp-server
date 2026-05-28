@@ -1,7 +1,8 @@
 {
   "name": "@cyanheads/cyanheads-mcp-server",
+  "mcpName": "io.github.cyanheads/cyanheads-mcp-server",
   "version": "0.1.0",
-  "description": "Fleet discovery server for the cyanheads MCP ecosystem — search tools and servers, get schemas and install snippets.",
+  "description": "Fleet discovery server for the cyanheads MCP ecosystem — semantic search for tools and install snippets.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,8 +34,6 @@
     "list-skills": "tsx scripts/list-skills.ts",
     "format": "biome check --write --unsafe .",
     "lint:mcp": "tsx scripts/lint-mcp.ts",
-    "lint:packaging": "tsx scripts/lint-packaging.ts",
-    "bundle": "npm run build && npx -y @anthropic-ai/mcpb pack . dist/cyanheads-mcp-server.mcpb",
     "changelog:build": "tsx scripts/build-changelog.ts",
     "changelog:check": "tsx scripts/build-changelog.ts --check",
     "test": "vitest run",
@@ -42,7 +41,17 @@
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js"
   },
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "mcp-discovery",
+    "mcp-fleet",
+    "semantic-search",
+    "cyanheads",
+    "typescript",
+    "bun"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cyanheads/cyanheads-mcp-server.git"
