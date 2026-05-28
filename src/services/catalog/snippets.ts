@@ -65,7 +65,5 @@ export const SNIPPET_REGISTRY: Record<ClientId, SnippetFactory> = {
 
 /** Generate install snippets for all supported clients for a given record. */
 export function buildAllSnippets(record: CatalogRecord): InstallSnippet[] {
-  return (Object.keys(SNIPPET_REGISTRY) as ClientId[]).map((clientId) =>
-    SNIPPET_REGISTRY[clientId](record),
-  );
+  return Object.values(SNIPPET_REGISTRY).map((factory) => factory(record));
 }

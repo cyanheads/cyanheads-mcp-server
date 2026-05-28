@@ -52,8 +52,6 @@ const FleetPayloadSchema = z.object({
 export class RemoteJsonCatalogProvider {
   private readonly _url: string;
   private readonly _timeoutMs: number;
-  private _payload: FleetPayload | null = null;
-  private _lastLoadedAt: number | null = null;
 
   constructor(config: Pick<ServerConfig, 'catalogUrl' | 'catalogFetchTimeoutMs'>) {
     this._url = config.catalogUrl;
@@ -63,7 +61,6 @@ export class RemoteJsonCatalogProvider {
   /**
    * Fetch and validate the remote fleet.json payload.
    * Merges the provided signal (if any) with the configured timeout signal.
-   * Caches the validated payload on success.
    * Throws McpError(InternalError) on any failure.
    */
   async load(signal?: AbortSignal): Promise<FleetPayload> {
@@ -116,22 +113,6 @@ export class RemoteJsonCatalogProvider {
       );
     }
 
-    this._payload = parsed.data as FleetPayload;
-    this._lastLoadedAt = Date.now();
-    return this._payload;
-  }
-
-  /** The cached payload from the last successful load, or null if never loaded. */
-  get cached(): FleetPayload | null {
-    return this._payload;
-  }
-
-  /**
-   * Returns true if no successful load has occurred yet, or if the elapsed time
-   * since the last successful load exceeds the given TTL.
-   */
-  isStale(ttlSeconds: number): boolean {
-    if (this._lastLoadedAt === null) return true;
-    return Date.now() - this._lastLoadedAt > ttlSeconds * 1000;
+    return parsed.data as FleetPayload;
   }
 }

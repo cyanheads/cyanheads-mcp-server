@@ -90,7 +90,7 @@ export class CatalogService implements ICatalogService {
     query: string;
     scope: 'tools' | 'servers';
     category?: CatalogCategory;
-    limit: number;
+    limit?: number;
   }): Promise<CatalogSearchResult[]> {
     const index = this._assertInitialized();
     const queryVec = await this._embeddings.embedQuery(
@@ -138,7 +138,7 @@ export class CatalogService implements ICatalogService {
     }
 
     results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-    return results.slice(0, params.limit);
+    return params.limit != null ? results.slice(0, params.limit) : results;
   }
 
   getTool(name: string): (CatalogTool & { serverRecord: CatalogRecord }) | null {

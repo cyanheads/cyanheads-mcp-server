@@ -19,6 +19,7 @@ export const describeTool = tool('cyanheads_describe', {
     'For servers: connection URL and install snippets for every supported client (or one specific ' +
     'client when the client parameter is specified). Call cyanheads_search first to find valid names.',
   annotations: { readOnlyHint: true, openWorldHint: false },
+  auth: ['tool:cyanheads_describe:read'],
 
   input: z.object({
     name: z

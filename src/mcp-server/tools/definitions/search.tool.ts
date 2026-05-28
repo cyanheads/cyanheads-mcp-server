@@ -17,6 +17,7 @@ export const searchTool = tool('cyanheads_search', {
     'server handles a workflow; use the default scope "tools" to find specific tools. ' +
     'Call cyanheads_describe on a result name to get install snippets and the connection URL.',
   annotations: { readOnlyHint: true, openWorldHint: false },
+  auth: ['tool:cyanheads_search:read'],
 
   input: z.object({
     query: z
@@ -105,7 +106,6 @@ export const searchTool = tool('cyanheads_search', {
       query: input.query,
       scope: input.scope,
       ...(input.category ? { category: input.category } : {}),
-      limit: 1000,
     });
 
     const totalMatched = allResults.length;

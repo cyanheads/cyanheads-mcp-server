@@ -125,13 +125,14 @@ export interface ICatalogService {
   /**
    * Semantic search. Embeds the query, computes cosine similarity against
    * every catalog entry within the requested scope, filters by category and
-   * by the configured similarity floor, and returns the top N matches.
+   * by the configured similarity floor, sorts descending, and returns the
+   * top `limit` (or every match when `limit` is omitted).
    */
   search(params: {
     query: string;
     scope: 'tools' | 'servers';
     category?: CatalogCategory;
-    limit: number;
+    limit?: number;
   }): Promise<CatalogSearchResult[]>;
 
   /** Catalog summary for diagnostics. */

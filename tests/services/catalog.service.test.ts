@@ -8,7 +8,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CatalogService } from '@/services/catalog/catalog-service.js';
 import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
-import { RemoteJsonCatalogProvider } from '@/services/catalog/remote-catalog-provider.js';
 import type { FleetPayload } from '@/services/catalog/types.js';
 
 // ---------------------------------------------------------------------------
@@ -445,37 +444,5 @@ describe('CatalogService', () => {
 
       expect(service.stats().serverCount).toBe(2);
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// RemoteJsonCatalogProvider.isStale()
-// ---------------------------------------------------------------------------
-
-describe('RemoteJsonCatalogProvider.isStale()', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('returns true before any successful load', () => {
-    const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
-    expect(provider.isStale(3600)).toBe(true);
-  });
-
-  it('returns false immediately after a successful load', async () => {
-    mockFetchOk(MINIMAL_PAYLOAD);
-    const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
-    await provider.load();
-    expect(provider.isStale(3600)).toBe(false);
-  });
-
-  it('returns true after advancing Date.now() past the TTL', async () => {
-    mockFetchOk(MINIMAL_PAYLOAD);
-    const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
-    await provider.load();
-
-    const realNow = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(realNow + 7200 * 1000);
-    expect(provider.isStale(3600)).toBe(true);
   });
 });
