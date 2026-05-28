@@ -6,14 +6,20 @@
     "url": "https://github.com/cyanheads/cyanheads-mcp-server",
     "source": "github"
   },
-  "version": "0.1.3",
+  "version": "0.1.4",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://cyanheads.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/cyanheads-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "packageArguments": [
         { "type": "positional", "value": "run" },
         { "type": "positional", "value": "start:stdio" }
@@ -62,7 +68,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/cyanheads-mcp-server",
       "runtimeHint": "node",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "packageArguments": [
         { "type": "positional", "value": "run" },
         { "type": "positional", "value": "start:http" }

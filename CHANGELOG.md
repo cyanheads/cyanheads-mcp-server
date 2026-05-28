@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-05-28
+
+README rewrite to match pubmed gold standard, .mcpb bundle restored for Claude Desktop one-click install, embeddings cache dir fix unblocks Docker non-root user, server.json advertises hosted endpoint via remotes[]
+
 ## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-05-28
 
 Fix Dockerfile build to invoke Bun on the script directly so multi-arch image builds succeed
