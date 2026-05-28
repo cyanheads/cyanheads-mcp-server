@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-05-28
+
+Trigger the lazy model load from setup() instead of waiting for the first request — works around a transformers.js cold-cache failure when pipeline() runs inside an OTEL-instrumented request handler
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-05-28
 
 Lazy-load the embedding model on first cyanheads_search call — startup no longer blocks on ~2 s pipeline warm-up; first query absorbs the cost once, steady-state inference unchanged
