@@ -7,9 +7,23 @@
  * @module services/catalog/embeddings-runtime
  */
 
+import os from 'node:os';
+import path from 'node:path';
+
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
-import { type FeatureExtractionPipeline, pipeline } from '@huggingface/transformers';
+import { env, type FeatureExtractionPipeline, pipeline } from '@huggingface/transformers';
+
+/**
+ * Redirect the model cache out of the package's `node_modules/.cache` default
+ * (unwritable in containers that install deps as root then drop to a non-root
+ * runtime user). HF_HOME / TRANSFORMERS_CACHE honored when set; otherwise fall
+ * back to a writable per-OS temp directory.
+ */
+env.cacheDir =
+  process.env.HF_HOME ??
+  process.env.TRANSFORMERS_CACHE ??
+  path.join(os.tmpdir(), 'cyanheads-mcp-server', 'hf-cache');
 
 export interface IEmbeddingsRuntime {
   embedQuery(text: string, dims: number, queryPrefix: string): Promise<Float32Array>;
