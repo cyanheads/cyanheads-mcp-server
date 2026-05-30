@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-05-30
+
+cyanheads_search servers roll-up (scope tools), structured-empty on zero matches, and .mcpbignore root-anchor fix
+
 ## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-05-30
 
 cyanheads_search enrichment — query echo, true total, and empty-result guidance in a typed enrichment block reaching both structuredContent and content[]; structuredContent keys totalMatched→totalCount and query→effectiveQuery

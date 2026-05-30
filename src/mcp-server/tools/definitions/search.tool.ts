@@ -72,6 +72,36 @@ export const searchTool = tool('cyanheads_search', {
       )
       .describe('Ranked matches, best first.'),
     scope: z.enum(['tools', 'servers']).describe('Scope that was searched.'),
+    servers: z
+      .array(
+        z
+          .object({
+            name: z.string().describe('Server package name (e.g. "cdc-health-mcp-server").'),
+            brief: z.string().describe('One-line description of what the server does.'),
+            category: z
+              .enum(['research', 'government', 'public-data', 'utility'])
+              .describe('Catalog category.'),
+            matchedTools: z
+              .number()
+              .describe("Count of this server's tools in the full match set."),
+            topScore: z
+              .number()
+              .describe(
+                'Best cosine similarity among this server\'s matched tools. Drives ordering. Distinct from the score a server gets under scope "servers".',
+              ),
+          })
+          .describe('A server roll-up entry.'),
+      )
+      .optional()
+      .describe(
+        'Roll-up of distinct servers across the full match set, before the limit slice. Present only for scope "tools". Ordered by topScore desc (name-tiebroken); capped at 10. Use serversTotal to see how many distinct servers matched in total.',
+      ),
+    serversTotal: z
+      .number()
+      .optional()
+      .describe(
+        'Total distinct servers in the full match set (before the cap of 10 is applied). Present only when servers is present.',
+      ),
   }),
 
   // Agent-facing search context — query echo, total count, empty-result guidance.
@@ -88,13 +118,6 @@ export const searchTool = tool('cyanheads_search', {
   },
 
   errors: [
-    {
-      reason: 'no_results',
-      code: JsonRpcErrorCode.NotFound,
-      when: 'Query produced no relevant matches.',
-      recovery:
-        'Broaden the query, remove the category filter, or try scope "servers" to find the right server first.',
-    },
     {
       reason: 'catalog_empty',
       code: JsonRpcErrorCode.ServiceUnavailable,
@@ -128,34 +151,79 @@ export const searchTool = tool('cyanheads_search', {
       ctx.enrich.notice(
         `No ${input.scope} matched "${input.query}". Try broadening the query${input.category ? ', removing the category filter,' : ''} or switching to scope "${input.scope === 'tools' ? 'servers' : 'tools'}".`,
       );
-      throw ctx.fail('no_results', `No ${input.scope} matched "${input.query}"`, {
-        ...ctx.recoveryFor('no_results'),
-        query: input.query,
-        scope: input.scope,
-        category: input.category,
-      });
+      return { results: [], scope: input.scope };
     }
 
     const results = allResults.slice(0, input.limit);
 
     ctx.log.info('Search complete', { totalMatched, returned: results.length });
 
-    return {
-      results,
-      scope: input.scope,
-    };
+    if (input.scope === 'tools') {
+      // Build server roll-up from the full match set (before limit slice)
+      const SERVERS_CAP = 10;
+      const serverMap = new Map<string, { matchedTools: number; topScore: number }>();
+      for (const r of allResults) {
+        const existing = serverMap.get(r.server);
+        if (existing) {
+          existing.matchedTools++;
+          if (r.score > existing.topScore) existing.topScore = r.score;
+        } else {
+          serverMap.set(r.server, { matchedTools: 1, topScore: r.score });
+        }
+      }
+
+      const serversTotal = serverMap.size;
+      const servers = Array.from(serverMap.entries())
+        .sort(([nameA, a], [nameB, b]) => b.topScore - a.topScore || nameA.localeCompare(nameB))
+        .slice(0, SERVERS_CAP)
+        .map(([name, agg]) => {
+          const record = catalog.getServer(name);
+          return {
+            name,
+            brief: record?.description ?? '',
+            category: record?.category ?? ('utility' as const),
+            matchedTools: agg.matchedTools,
+            topScore: agg.topScore,
+          };
+        });
+
+      return { results, scope: input.scope, servers, serversTotal };
+    }
+
+    return { results, scope: input.scope };
   },
 
   format: (result) => {
     const lines: string[] = [`**Scope:** ${result.scope}`, ''];
-    for (const item of result.results) {
-      lines.push(`### ${item.name}`);
-      lines.push(
-        `**Server:** ${item.server}  |  **Category:** ${item.category}  |  **Score:** ${item.score.toFixed(3)}`,
-      );
-      lines.push(item.brief);
-      lines.push('');
+
+    if (result.results.length === 0) {
+      lines.push('No results matched.');
+    } else {
+      for (const item of result.results) {
+        lines.push(`### ${item.name}`);
+        lines.push(
+          `**Server:** ${item.server}  |  **Category:** ${item.category}  |  **Score:** ${item.score.toFixed(3)}`,
+        );
+        lines.push(item.brief);
+        lines.push('');
+      }
     }
+
+    if (result.servers && result.servers.length > 0) {
+      const cap = result.servers.length;
+      const total = result.serversTotal ?? cap;
+      const header = total > cap ? `## Servers (showing ${cap} of ${total})` : '## Servers';
+      lines.push(header);
+      lines.push('');
+      for (const s of result.servers) {
+        lines.push(
+          `**${s.name}** (${s.category}) — ${s.matchedTools} matched tool${s.matchedTools === 1 ? '' : 's'}, top score ${s.topScore.toFixed(3)}`,
+        );
+        lines.push(s.brief);
+        lines.push('');
+      }
+    }
+
     return [{ type: 'text', text: lines.join('\n') }];
   },
 });

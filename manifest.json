@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "cyanheads-mcp-server",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
   "author": { "name": "cyanheads" },
   "repository": {

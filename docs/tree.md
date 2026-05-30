@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-05-28 10:57:45
+Generated on: 2026-05-30 12:01:12
 
 ```text
 cyanheads-mcp-server/
@@ -14,6 +14,7 @@ cyanheads-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -27,6 +28,7 @@ cyanheads-mcp-server/
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
+│   ├── lint-packaging.ts
 │   ├── list-skills.ts
 │   └── tree.ts
 ├── skills/
@@ -82,8 +84,6 @@ cyanheads-mcp-server/
 │   │   └── SKILL.md
 │   ├── maintenance/
 │   │   └── SKILL.md
-│   ├── migrate-mcp-ts-template/
-│   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
 │   │   │   ├── agent-protocol.md
@@ -127,13 +127,15 @@ cyanheads-mcp-server/
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
-│   │   └── catalog.service.test.ts
+│   │   ├── catalog.service.test.ts
+│   │   └── embeddings-runtime.test.ts
 │   └── tools/
 │       ├── describe.tool.test.ts
 │       └── search.tool.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
+├── .mcpbignore
 ├── AGENTS.md
 ├── biome.json
 ├── bun.lock
@@ -143,6 +145,7 @@ cyanheads-mcp-server/
 ├── devcheck.config.json
 ├── Dockerfile
 ├── LICENSE
+├── manifest.json
 ├── package.json
 ├── README.md
 ├── server.json

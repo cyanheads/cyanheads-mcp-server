@@ -19,6 +19,7 @@ import type { FleetPayload } from '@/services/catalog/types.js';
 const TEST_MODEL = 'test/mock-embed-v1';
 const E0 = [1, 0, 0, 0];
 const E1 = [0, 1, 0, 0];
+const E2 = [0.7, 0.7, 0, 0]; // partial overlap with both E0 and E1
 
 const TEST_CONFIG = {
   catalogUrl: 'https://test.example.com/fleet.json',
@@ -52,6 +53,11 @@ const FLEET_PAYLOAD: FleetPayload = {
           description: 'Query seismic events by location and magnitude.',
           embedding: E0,
         },
+        {
+          name: 'earthquake_get_event',
+          description: 'Fetch a single seismic event by ID.',
+          embedding: [0.9, 0.1, 0, 0],
+        },
       ],
     },
     {
@@ -70,6 +76,30 @@ const FLEET_PAYLOAD: FleetPayload = {
           name: 'arxiv_search',
           description: 'Search arXiv papers by query.',
           embedding: E1,
+        },
+      ],
+    },
+    {
+      name: 'pubmed-mcp-server',
+      displayName: 'PubMed',
+      description: 'Search biomedical literature via PubMed.',
+      category: 'research',
+      endpoint: 'https://pubmed.caseyjhand.com/mcp',
+      npm: '@cyanheads/pubmed-mcp-server',
+      github: 'https://github.com/cyanheads/pubmed-mcp-server',
+      version: '1.0.0',
+      auth: 'none',
+      embedding: E2,
+      tools: [
+        {
+          name: 'pubmed_search_articles',
+          description: 'Search PubMed articles.',
+          embedding: E2,
+        },
+        {
+          name: 'pubmed_fetch_articles',
+          description: 'Fetch PubMed article details.',
+          embedding: E2,
         },
       ],
     },
@@ -108,6 +138,7 @@ describe('cyanheads_search', () => {
       'arxiv research papers': E1,
       'totally unrelated capability': [0, 0, 0, 1],
       'both research and seismic': [1, 1, 0, 0],
+      'broad seismic and research query': [1, 1, 0, 0],
     });
     initCatalogService(TEST_CONFIG, embeddings);
     await getCatalogService().initialize();
@@ -191,21 +222,86 @@ describe('cyanheads_search', () => {
     }
   });
 
-  it('throws no_results when every score is below the floor', async () => {
+  it('returns structured empty when every score is below the floor', async () => {
     const ctx = createMockContext({ errors: searchTool.errors });
     const input = searchTool.input.parse({
       query: 'totally unrelated capability',
     });
 
-    await expect(searchTool.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'no_results' },
-    });
+    const result = await searchTool.handler(input, ctx);
 
-    // Enrichment is still populated even on the error path
+    expect(result.results).toEqual([]);
+    expect(result.scope).toBe('tools');
+
+    // Enrichment carries the query echo, zero total, and a notice
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('totally unrelated capability');
     expect(enrichment.totalCount).toBe(0);
     expect(typeof enrichment.notice).toBe('string');
+    expect(enrichment.notice!.length).toBeGreaterThan(0);
+  });
+
+  it('includes servers roll-up in tools-scope results', async () => {
+    const ctx = createMockContext();
+    const input = searchTool.input.parse({
+      query: 'broad seismic and research query',
+      scope: 'tools',
+      limit: 1,
+    });
+    const result = await searchTool.handler(input, ctx);
+
+    // Results respect the limit
+    expect(result.results.length).toBeLessThanOrEqual(1);
+
+    // servers roll-up covers all matched servers from the full set
+    expect(result.servers).toBeDefined();
+    expect(result.servers!.length).toBeGreaterThan(0);
+    expect(result.serversTotal).toBeDefined();
+    expect(result.serversTotal).toBeGreaterThanOrEqual(result.servers!.length);
+
+    // Each roll-up entry has required fields
+    for (const s of result.servers!) {
+      expect(typeof s.name).toBe('string');
+      expect(typeof s.brief).toBe('string');
+      expect(typeof s.matchedTools).toBe('number');
+      expect(s.matchedTools).toBeGreaterThan(0);
+      expect(typeof s.topScore).toBe('number');
+    }
+
+    // Ordered by topScore descending
+    for (let i = 1; i < result.servers!.length; i++) {
+      expect(result.servers![i - 1]!.topScore).toBeGreaterThanOrEqual(result.servers![i]!.topScore);
+    }
+  });
+
+  it('omits servers roll-up in servers scope', async () => {
+    const ctx = createMockContext();
+    const input = searchTool.input.parse({
+      query: 'arxiv research papers',
+      scope: 'servers',
+      limit: 5,
+    });
+    const result = await searchTool.handler(input, ctx);
+
+    expect(result.scope).toBe('servers');
+    expect(result.servers).toBeUndefined();
+    expect(result.serversTotal).toBeUndefined();
+  });
+
+  it('servers roll-up is capped at 10', async () => {
+    // With 3 servers in the fixture, cap is not exercised — verify it never exceeds 10
+    const ctx = createMockContext();
+    const input = searchTool.input.parse({
+      query: 'both research and seismic',
+      scope: 'tools',
+      limit: 5,
+    });
+    const result = await searchTool.handler(input, ctx);
+
+    if (result.servers) {
+      expect(result.servers.length).toBeLessThanOrEqual(10);
+      expect(result.serversTotal).toBeGreaterThanOrEqual(result.servers.length);
+    }
   });
 
   it('throws catalog_empty when the catalog has not been initialized', async () => {
@@ -247,6 +343,16 @@ describe('cyanheads_search', () => {
         },
       ],
       scope: 'tools' as const,
+      servers: [
+        {
+          name: 'earthquake-mcp-server',
+          brief: 'Search USGS seismic data.',
+          category: 'public-data' as const,
+          matchedTools: 2,
+          topScore: 0.82,
+        },
+      ],
+      serversTotal: 2,
     };
     const blocks = searchTool.format!(result);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
@@ -256,5 +362,40 @@ describe('cyanheads_search', () => {
     expect(text).toContain('public-data');
     expect(text).toContain('0.82');
     expect(text).toContain('tools');
+    // servers roll-up
+    expect(text).toContain('## Servers');
+    expect(text).toContain('Search USGS seismic data.');
+    expect(text).toContain('2 matched tools');
+  });
+
+  it('renders empty results in format()', () => {
+    const result = {
+      results: [],
+      scope: 'tools' as const,
+    };
+    const blocks = searchTool.format!(result);
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
+    expect(text).toContain('No results matched.');
+    expect(text).toContain('tools');
+  });
+
+  it('renders servers roll-up with cap header in format()', () => {
+    const result = {
+      results: [],
+      scope: 'tools' as const,
+      servers: [
+        {
+          name: 'some-mcp-server',
+          brief: 'Does something.',
+          category: 'utility' as const,
+          matchedTools: 1,
+          topScore: 0.9,
+        },
+      ],
+      serversTotal: 15,
+    };
+    const blocks = searchTool.format!(result);
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
+    expect(text).toContain('showing 1 of 15');
   });
 });
