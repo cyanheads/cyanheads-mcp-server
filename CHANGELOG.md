@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-05-30
+
+cyanheads_search enrichment — query echo, true total, and empty-result guidance in a typed enrichment block reaching both structuredContent and content[]; structuredContent keys totalMatched→totalCount and query→effectiveQuery
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-05-28
 
 Await the embedding model warm-up at setup — the 0.1.7 fire-and-forget races with @opentelemetry/instrumentation-http installing its fetch wrap, leaving the cold-cache model download permanently broken; await keeps pipeline() inside the pre-OTEL window

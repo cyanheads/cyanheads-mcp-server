@@ -1,7 +1,7 @@
 {
   "name": "@cyanheads/cyanheads-mcp-server",
   "mcpName": "io.github.cyanheads/cyanheads-mcp-server",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
   "type": "module",
   "main": "dist/index.js",
@@ -33,7 +33,8 @@
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
     "tree": "tsx scripts/tree.ts",
     "list-skills": "tsx scripts/list-skills.ts",
-    "format": "biome check --write --unsafe .",
+    "format": "biome check --write .",
+    "format:unsafe": "biome check --write --unsafe .",
     "lint:mcp": "tsx scripts/lint-mcp.ts",
     "lint:packaging": "tsx scripts/lint-packaging.ts",
     "bundle": "tsx scripts/build.ts && npx -y @anthropic-ai/mcpb pack . dist/cyanheads-mcp-server.mcpb",
@@ -69,19 +70,19 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.9.11",
+    "@cyanheads/mcp-ts-core": "^0.9.16",
     "@huggingface/transformers": "4.2.0",
     "pino-pretty": "^13.1.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.7",
-    "@types/node": "^25.6.0",
+    "@biomejs/biome": "^2.4.16",
+    "@types/node": "^25.9.1",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.5",
-    "tsc-alias": "^1.8.16",
-    "tsx": "^4.19.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "tsc-alias": "^1.8.17",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }
