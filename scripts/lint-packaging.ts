@@ -4,7 +4,8 @@
  * `manifest.json` (MCPB bundle install UX) and `server.json` (MCP Registry
  * discovery) for stdio packages.
  *
- * Used by devcheck and as a standalone script: `bun run lint:packaging`.
+ * Used by devcheck and as a standalone script: `bun run lint:packaging` /
+ * `npm run lint:packaging`.
  *
  * Checks:
  *   1. Manifest `name` must not contain a scope prefix (`@scope/`).
@@ -15,7 +16,10 @@
  *   4. Every required stdio env var in server.json (no default) must appear
  *      as a key in manifest `mcp_config.env` (the bundle can receive it).
  *
- * Skips cleanly when `manifest.json` is absent.
+ * Checks 1–2 run with `manifest.json` alone; 3–4 require `server.json`.
+ *
+ * Skips cleanly when `manifest.json` is absent — consumers who deleted it for
+ * an HTTP-only deploy should not fail this check.
  *
  * @module scripts/lint-packaging
  */

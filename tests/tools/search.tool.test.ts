@@ -5,7 +5,7 @@
  * @module tests/tools/search.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchTool } from '@/mcp-server/tools/definitions/search.tool.js';
 import {
@@ -128,9 +128,13 @@ describe('cyanheads_search', () => {
     const result = await searchTool.handler(input, ctx);
 
     expect(result.scope).toBe('tools');
-    expect(result.query).toBe('seismic earthquake activity');
     expect(result.results.length).toBeGreaterThan(0);
-    expect(result.totalMatched).toBeGreaterThanOrEqual(result.results.length);
+
+    // Query echo and total land in enrichment, not the handler return
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('seismic earthquake activity');
+    expect(typeof enrichment.totalCount).toBe('number');
+    expect(enrichment.totalCount).toBeGreaterThanOrEqual(result.results.length);
 
     const top = result.results[0];
     expect(top.name).toBe('earthquake_search');
@@ -157,7 +161,7 @@ describe('cyanheads_search', () => {
     }
   });
 
-  it('respects the limit parameter', async () => {
+  it('respects the limit parameter and surfaces total in enrichment', async () => {
     const ctx = createMockContext({ errors: searchTool.errors });
     const input = searchTool.input.parse({
       query: 'seismic earthquake activity',
@@ -166,7 +170,9 @@ describe('cyanheads_search', () => {
     const result = await searchTool.handler(input, ctx);
 
     expect(result.results.length).toBeLessThanOrEqual(1);
-    expect(result.totalMatched).toBeGreaterThanOrEqual(result.results.length);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalCount).toBeGreaterThanOrEqual(result.results.length);
   });
 
   it('filters by category', async () => {
@@ -194,6 +200,12 @@ describe('cyanheads_search', () => {
     await expect(searchTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'no_results' },
     });
+
+    // Enrichment is still populated even on the error path
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('totally unrelated capability');
+    expect(enrichment.totalCount).toBe(0);
+    expect(typeof enrichment.notice).toBe('string');
   });
 
   it('throws catalog_empty when the catalog has not been initialized', async () => {
@@ -223,19 +235,17 @@ describe('cyanheads_search', () => {
     }
   });
 
-  it('renders all output fields in format()', () => {
+  it('renders output fields in format()', () => {
     const result = {
       results: [
         {
           name: 'earthquake_search',
           server: 'earthquake-mcp-server',
           brief: 'Query seismic events.',
-          category: 'public-data',
+          category: 'public-data' as const,
           score: 0.82,
         },
       ],
-      totalMatched: 1,
-      query: 'earthquake',
       scope: 'tools' as const,
     };
     const blocks = searchTool.format!(result);
@@ -245,8 +255,6 @@ describe('cyanheads_search', () => {
     expect(text).toContain('Query seismic events.');
     expect(text).toContain('public-data');
     expect(text).toContain('0.82');
-    expect(text).toContain('1');
-    expect(text).toContain('earthquake');
     expect(text).toContain('tools');
   });
 });

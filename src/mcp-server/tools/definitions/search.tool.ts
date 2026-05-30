@@ -71,10 +71,21 @@ export const searchTool = tool('cyanheads_search', {
           .describe('A single search result entry.'),
       )
       .describe('Ranked matches, best first.'),
-    totalMatched: z.number().describe('Total relevant matches before the limit was applied.'),
-    query: z.string().describe('The query that was searched.'),
     scope: z.enum(['tools', 'servers']).describe('Scope that was searched.'),
   }),
+
+  // Agent-facing search context — query echo, total count, empty-result guidance.
+  // Reaches both structuredContent and content[] trailer; never in the domain return.
+  enrichment: {
+    effectiveQuery: z.string().describe('The query that was searched.'),
+    totalCount: z.number().describe('Total relevant matches before the limit was applied.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no results matched — e.g. how to broaden the query or try a different scope. Absent on successful result pages.',
+      ),
+  },
 
   errors: [
     {
@@ -110,7 +121,13 @@ export const searchTool = tool('cyanheads_search', {
 
     const totalMatched = allResults.length;
 
+    ctx.enrich.echo(input.query);
+    ctx.enrich.total(totalMatched);
+
     if (totalMatched === 0) {
+      ctx.enrich.notice(
+        `No ${input.scope} matched "${input.query}". Try broadening the query${input.category ? ', removing the category filter,' : ''} or switching to scope "${input.scope === 'tools' ? 'servers' : 'tools'}".`,
+      );
       throw ctx.fail('no_results', `No ${input.scope} matched "${input.query}"`, {
         ...ctx.recoveryFor('no_results'),
         query: input.query,
@@ -125,18 +142,12 @@ export const searchTool = tool('cyanheads_search', {
 
     return {
       results,
-      totalMatched,
-      query: input.query,
       scope: input.scope,
     };
   },
 
   format: (result) => {
-    const lines: string[] = [
-      `**Query:** ${result.query}  **Scope:** ${result.scope}`,
-      `**Matched:** ${result.totalMatched} total, showing ${result.results.length}`,
-      '',
-    ];
+    const lines: string[] = [`**Scope:** ${result.scope}`, ''];
     for (const item of result.results) {
       lines.push(`### ${item.name}`);
       lines.push(
