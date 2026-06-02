@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-05-30 12:01:12
+Generated on: 2026-06-02 10:47:42
 
 ```text
 cyanheads-mcp-server/
@@ -15,6 +15,7 @@ cyanheads-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -128,9 +129,14 @@ cyanheads-mcp-server/
 │   ├── resources/
 │   ├── services/
 │   │   ├── catalog.service.test.ts
-│   │   └── embeddings-runtime.test.ts
+│   │   ├── embeddings-behavior.test.ts
+│   │   ├── embeddings-runtime.test.ts
+│   │   ├── remote-catalog-provider.test.ts
+│   │   └── snippets.test.ts
 │   └── tools/
+│       ├── describe-input-validation.test.ts
 │       ├── describe.tool.test.ts
+│       ├── search-input-validation.test.ts
 │       └── search.tool.test.ts
 ├── .dockerignore
 ├── .env.example
