@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-06-02
+
+Adopt @cyanheads/mcp-ts-core 0.9.21 — request-context fix, secret-stripping in fetchWithTimeout, fail-fast withRetry
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-06-02
 
 cyanheads_describe: local (stdio) install snippets for every server, plus remote (HTTP) when a hosted endpoint exists
