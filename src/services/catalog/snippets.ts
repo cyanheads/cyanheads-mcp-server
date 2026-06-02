@@ -1,56 +1,144 @@
 /**
- * @fileoverview Per-client install snippet factory registry.
- * A plain Record mapping ClientId to a factory function that produces an InstallSnippet
- * from a CatalogRecord. Snippets are derived at request time from the record's
- * { name, endpoint } fields — no precomputed snippet list lives in the catalog JSON.
+ * @fileoverview Per-client install snippet factories.
+ * Snippets are derived at request time from a CatalogRecord — no precomputed snippet
+ * list lives in the catalog JSON. Two transports per server:
+ *   - stdio (local): built from `record.npm` via `npx -y <pkg>`. Available for every
+ *     published server. The `curl` probe has no stdio analog, so it is HTTP-only.
+ *   - http (remote): built from `record.endpoint`. Emitted only when the record has an
+ *     endpoint (hosted servers).
  *
- * All fleet servers run Streamable HTTP — the legacy `sse` transport tag is not
- * emitted. Per-client formats:
- *   - claude-code / gemini: `<cli> mcp add --transport http <name> <url>`
- *   - codex:                `codex mcp add <name> --url <url>`
- *   - cursor:               `mcpServers.<name>.{url}` (no `type` field)
- *   - streamable-http:      `mcpServers.<name>.{type:"http", url}` (Claude Desktop, Cline, generic)
- *   - curl:                 `initialize` POST with `MCP-Protocol-Version` header
+ * Required env vars (`record.requiredEnvVars`) are scaffolded into the JSON config
+ * snippets as empty-valued `env` keys so the caller knows what to set; the CLI snippets
+ * stay bare and runnable. All hosted servers run Streamable HTTP — the legacy `sse`
+ * transport tag is never emitted.
  * @module services/catalog/snippets
  */
 
-import type { CatalogRecord, ClientId, InstallSnippet } from './types.js';
+import type { CatalogRecord, InstallSnippet } from './types.js';
 
-/** Factory signature: given a CatalogRecord, produce one InstallSnippet. */
-type SnippetFactory = (record: CatalogRecord) => InstallSnippet;
+/** Factory for a local (stdio) snippet — needs only `record.npm`. */
+type StdioFactory = (record: CatalogRecord) => InstallSnippet;
+
+/** Factory for a remote (HTTP) snippet — needs the resolved hosted endpoint. */
+type HttpFactory = (record: CatalogRecord, endpoint: string) => InstallSnippet;
 
 /** MCP protocol version pinned in the curl `initialize` snippet. */
 const CURL_MCP_PROTOCOL_VERSION = '2025-11-25';
 
-/** Claude Code CLI install command. */
-function claudeCodeSnippet(record: CatalogRecord): InstallSnippet {
+/**
+ * `env` block for a JSON config snippet — one empty-valued key per required var.
+ * Returns nothing to spread when the server needs no configuration, so the `env`
+ * block is omitted entirely rather than emitted empty.
+ */
+function envBlock(record: CatalogRecord): { env?: Record<string, string> } {
+  const vars = record.requiredEnvVars;
+  if (!vars || vars.length === 0) return {};
+  return { env: Object.fromEntries(vars.map((name) => [name, ''])) };
+}
+
+// ---------------------------------------------------------------------------
+// Local (stdio) factories — built from record.npm via `npx -y <pkg>`
+// ---------------------------------------------------------------------------
+
+function claudeCodeStdio(record: CatalogRecord): InstallSnippet {
   return {
     client: 'claude-code',
+    transport: 'stdio',
     label: 'Claude Code (CLI)',
-    payload: `claude mcp add --transport http ${record.name} ${record.endpoint}`,
+    payload: `claude mcp add --transport stdio ${record.name} -- npx -y ${record.npm}`,
   };
 }
 
-/** OpenAI Codex CLI install command. */
-function codexSnippet(record: CatalogRecord): InstallSnippet {
+function codexStdio(record: CatalogRecord): InstallSnippet {
   return {
     client: 'codex',
+    transport: 'stdio',
     label: 'Codex (CLI)',
-    payload: `codex mcp add ${record.name} --url ${record.endpoint}`,
+    payload: `codex mcp add ${record.name} -- npx -y ${record.npm}`,
   };
 }
 
-/** Cursor `.cursor/mcp.json` fragment (Cursor reads HTTP servers without a `type` field). */
-function cursorSnippet(record: CatalogRecord): InstallSnippet {
+function cursorStdio(record: CatalogRecord): InstallSnippet {
   return {
     client: 'cursor',
+    transport: 'stdio',
     label: 'Cursor (mcp.json)',
-    payload: JSON.stringify({ mcpServers: { [record.name]: { url: record.endpoint } } }, null, 2),
+    payload: JSON.stringify(
+      {
+        mcpServers: {
+          [record.name]: { command: 'npx', args: ['-y', record.npm], ...envBlock(record) },
+        },
+      },
+      null,
+      2,
+    ),
   };
 }
 
-/** curl `initialize` request — a connectivity probe, not an install. */
-function curlSnippet(record: CatalogRecord): InstallSnippet {
+function geminiStdio(record: CatalogRecord): InstallSnippet {
+  return {
+    client: 'gemini',
+    transport: 'stdio',
+    label: 'Gemini (CLI)',
+    payload: `gemini mcp add ${record.name} npx -y ${record.npm}`,
+  };
+}
+
+/** Generic `mcpServers` JSON (stdio) for Claude Desktop, Cline, and other MCP clients. */
+function genericStdio(record: CatalogRecord): InstallSnippet {
+  return {
+    client: 'streamable-http',
+    transport: 'stdio',
+    label: 'Claude Desktop / Cline / generic',
+    payload: JSON.stringify(
+      {
+        mcpServers: {
+          [record.name]: {
+            type: 'stdio',
+            command: 'npx',
+            args: ['-y', record.npm],
+            ...envBlock(record),
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Remote (HTTP) factories — built from the hosted endpoint
+// ---------------------------------------------------------------------------
+
+function claudeCodeHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
+  return {
+    client: 'claude-code',
+    transport: 'http',
+    label: 'Claude Code (CLI)',
+    payload: `claude mcp add --transport http ${record.name} ${endpoint}`,
+  };
+}
+
+function codexHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
+  return {
+    client: 'codex',
+    transport: 'http',
+    label: 'Codex (CLI)',
+    payload: `codex mcp add ${record.name} --url ${endpoint}`,
+  };
+}
+
+function cursorHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
+  return {
+    client: 'cursor',
+    transport: 'http',
+    label: 'Cursor (mcp.json)',
+    payload: JSON.stringify({ mcpServers: { [record.name]: { url: endpoint } } }, null, 2),
+  };
+}
+
+function curlHttp(_record: CatalogRecord, endpoint: string): InstallSnippet {
   const body = JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
@@ -63,9 +151,10 @@ function curlSnippet(record: CatalogRecord): InstallSnippet {
   });
   return {
     client: 'curl',
+    transport: 'http',
     label: 'curl (initialize probe)',
     payload: [
-      `curl -X POST ${record.endpoint} \\`,
+      `curl -X POST ${endpoint} \\`,
       `  -H "Content-Type: application/json" \\`,
       `  -H "MCP-Protocol-Version: ${CURL_MCP_PROTOCOL_VERSION}" \\`,
       `  -d '${body}'`,
@@ -73,43 +162,58 @@ function curlSnippet(record: CatalogRecord): InstallSnippet {
   };
 }
 
-/** Gemini CLI install command. */
-function geminiSnippet(record: CatalogRecord): InstallSnippet {
+function geminiHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
   return {
     client: 'gemini',
+    transport: 'http',
     label: 'Gemini (CLI)',
-    payload: `gemini mcp add --transport http ${record.name} ${record.endpoint}`,
+    payload: `gemini mcp add --transport http ${record.name} ${endpoint}`,
   };
 }
 
-/**
- * Generic Streamable HTTP `mcpServers` block. Works for Claude Desktop, Cline,
- * mcp-remote, and any other MCP client that consumes the standard config shape
- * with `type: "http"`.
- */
-function streamableHttpSnippet(record: CatalogRecord): InstallSnippet {
+/** Generic `mcpServers` JSON (Streamable HTTP) for Claude Desktop, Cline, mcp-remote. */
+function genericHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
   return {
     client: 'streamable-http',
-    label: 'Streamable HTTP (Claude Desktop, Cline, generic)',
+    transport: 'http',
+    label: 'Claude Desktop / Cline / generic',
     payload: JSON.stringify(
-      { mcpServers: { [record.name]: { type: 'http', url: record.endpoint } } },
+      { mcpServers: { [record.name]: { type: 'http', url: endpoint } } },
       null,
       2,
     ),
   };
 }
 
-/** Registry of all supported clients. */
-export const SNIPPET_REGISTRY: Record<ClientId, SnippetFactory> = {
-  'claude-code': claudeCodeSnippet,
-  codex: codexSnippet,
-  cursor: cursorSnippet,
-  curl: curlSnippet,
-  gemini: geminiSnippet,
-  'streamable-http': streamableHttpSnippet,
-};
+/** Local (stdio) factories, in render order. One per client that supports a local install. */
+const STDIO_FACTORIES: StdioFactory[] = [
+  claudeCodeStdio,
+  codexStdio,
+  cursorStdio,
+  geminiStdio,
+  genericStdio,
+];
 
-/** Generate install snippets for all supported clients for a given record. */
+/** Remote (HTTP) factories, in render order. Emitted only when the record has an endpoint. */
+const HTTP_FACTORIES: HttpFactory[] = [
+  claudeCodeHttp,
+  codexHttp,
+  cursorHttp,
+  curlHttp,
+  geminiHttp,
+  genericHttp,
+];
+
+/**
+ * Generate every install snippet for a record: local (stdio) snippets always, plus
+ * remote (HTTP) snippets when the record has a hosted endpoint. Local snippets come
+ * first so a flat consumer reads "install locally, or connect remotely" top to bottom.
+ */
 export function buildAllSnippets(record: CatalogRecord): InstallSnippet[] {
-  return Object.values(SNIPPET_REGISTRY).map((factory) => factory(record));
+  const snippets = STDIO_FACTORIES.map((factory) => factory(record));
+  if (record.endpoint) {
+    const endpoint = record.endpoint;
+    for (const factory of HTTP_FACTORIES) snippets.push(factory(record, endpoint));
+  }
+  return snippets;
 }

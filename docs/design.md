@@ -45,7 +45,7 @@ The repo is open source but the hosted endpoint is the product. README positioni
 - Document embeddings are baked into `fleet.json` at portfolio build time. The server never embeds documents — only queries.
 - Document and query embeddings must use the same model. The fleet payload declares its model id; the server refuses to load if its runtime model id doesn't match.
 - Query embedding happens once per `cyanheads_search` call on the VPS. Cosine sim against the in-memory vector set is the hot path.
-- `cyanheads_describe` returns all client snippets when `client` is omitted; one snippet when a client is specified.
+- `cyanheads_describe` returns local (stdio) and remote (HTTP) snippets per client when `client` is omitted; one client's snippets (both transports) when a client is specified.
 - Phase 1 runs on the VPS (stdio + HTTP). No Cloudflare Workers / Vectorize / KV / D1 dependencies.
 - The catalog refreshes by polling `fleet.json` on a configurable interval (default 1 hour). Document embeddings come along for free since they live in the same file.
 
@@ -145,11 +145,12 @@ interface CatalogRecord {
   displayName: string;                  // "arXiv"
   description: string;                  // from server.description on GET /mcp
   category: 'research' | 'government' | 'public-data' | 'utility';
-  endpoint: string;                     // hosted URL, always present
-  npm: string;                          // "@cyanheads/arxiv-mcp-server"
+  endpoint?: string;                    // hosted URL — drives remote/HTTP snippets; absent for local-only servers
+  npm: string;                          // "@cyanheads/arxiv-mcp-server" — drives local/stdio snippets
   github: string;
   version: string;                      // captured at generation time
   auth: string;                         // open string; currently "none"
+  requiredEnvVars?: string[];           // env var names the local install needs; scaffolded into JSON snippets
   embedding: number[];                  // length === FleetPayload.embeddingDims, L2-normalized
   tools: CatalogTool[];
 }
@@ -157,6 +158,7 @@ interface CatalogRecord {
 /** Install snippet — generated at describe-time from CatalogRecord, never stored in fleet.json. */
 interface InstallSnippet {
   client: ClientId;
+  transport: 'stdio' | 'http';          // stdio = local (npx); http = remote (hosted endpoint)
   label: string;
   payload: string;
 }
@@ -170,51 +172,47 @@ Embeddings are L2-normalized at build time so the runtime cosine similarity coll
 
 ## Per-Client Install Snippet Registry
 
+Two transports per server, generated at describe time:
+
+- **Local (stdio)** — built from `record.npm` as `npx -y <pkg>`. Available for **every** published server.
+- **Remote (HTTP)** — built from `record.endpoint`. Emitted **only** when the record has an endpoint (hosted servers).
+
 ### Supported clients
 
-| Client | Mechanism | Format |
-|:-------|:----------|:-------|
-| `claude-code` | `claude mcp add` CLI command | Shell command string |
-| `codex` | `codex mcp add` CLI command | Shell command string |
-| `cursor` | JSON merge into `.cursor/mcp.json` `mcpServers` block (no `type` field) | JSON object |
-| `curl` | `initialize` POST for connectivity testing | Shell command string |
-| `gemini` | `gemini mcp add` CLI command | Shell command string |
-| `streamable-http` | Generic `mcpServers` JSON for any MCP HTTP client (Claude Desktop, Cline, mcp-remote) | JSON object |
+| Client | stdio (local) | http (remote) | Format |
+|:-------|:--------------|:--------------|:-------|
+| `claude-code` | ✓ | ✓ | `claude mcp add` CLI command |
+| `codex` | ✓ | ✓ | `codex mcp add` CLI command |
+| `cursor` | ✓ | ✓ | `mcpServers` JSON, no `type` field |
+| `gemini` | ✓ | ✓ | `gemini mcp add` CLI command |
+| `streamable-http` | ✓ | ✓ | generic `mcpServers` JSON (with `type`) for Claude Desktop, Cline, mcp-remote |
+| `curl` | — | ✓ | `initialize` connectivity probe — no stdio analog |
 
-Adding a client = one entry in the static registry + one `ClientId` union member. No handler changes.
+A hosted server yields 11 snippets (5 stdio + 6 http); a local-only server yields 5 (stdio only). Required env vars (`record.requiredEnvVars`) are scaffolded as empty-valued `env` keys in the JSON configs so the caller knows what to set; CLI snippets stay bare. Each snippet carries a `transport` field, and `cyanheads_describe` groups them into "Local install" and "Remote install" sections.
 
 ### Registry location
 
-`src/services/catalog/snippets.ts` — `Record<ClientId, (record: CatalogRecord) => InstallSnippet>`.
+`src/services/catalog/snippets.ts` — two factory lists (`STDIO_FACTORIES`, `HTTP_FACTORIES`); `buildAllSnippets(record)` returns every stdio snippet plus the http snippets when `record.endpoint` is present.
 
 ### Snippet formats
 
 All hosted servers run Streamable HTTP. The legacy `sse` transport tag is never emitted.
 
 ```ts
-// claude-code
-{ client: 'claude-code', label: 'Claude Code (CLI)',
-  payload: `claude mcp add --transport http ${record.name} ${record.endpoint}` }
+// Local (stdio) — from record.npm
+claude-code:      claude mcp add --transport stdio ${name} -- npx -y ${npm}
+codex:            codex mcp add ${name} -- npx -y ${npm}
+cursor:           { mcpServers: { [name]: { command: 'npx', args: ['-y', npm], env? } } }
+gemini:           gemini mcp add ${name} npx -y ${npm}
+streamable-http:  { mcpServers: { [name]: { type: 'stdio', command: 'npx', args: ['-y', npm], env? } } }
 
-// codex
-{ client: 'codex', label: 'Codex (CLI)',
-  payload: `codex mcp add ${record.name} --url ${record.endpoint}` }
-
-// cursor
-{ client: 'cursor', label: 'Cursor (mcp.json)',
-  payload: JSON.stringify({ mcpServers: { [record.name]: { url: record.endpoint } } }, null, 2) }
-
-// curl
-{ client: 'curl', label: 'curl (initialize probe)',
-  payload: `curl -X POST ${record.endpoint} \\\n  -H "Content-Type: application/json" \\\n  -H "MCP-Protocol-Version: 2025-11-25" \\\n  -d '${initializeBody}'` }
-
-// gemini
-{ client: 'gemini', label: 'Gemini (CLI)',
-  payload: `gemini mcp add --transport http ${record.name} ${record.endpoint}` }
-
-// streamable-http
-{ client: 'streamable-http', label: 'Streamable HTTP (Claude Desktop, Cline, generic)',
-  payload: JSON.stringify({ mcpServers: { [record.name]: { type: 'http', url: record.endpoint } } }, null, 2) }
+// Remote (http) — from record.endpoint
+claude-code:      claude mcp add --transport http ${name} ${endpoint}
+codex:            codex mcp add ${name} --url ${endpoint}
+cursor:           { mcpServers: { [name]: { url: endpoint } } }
+gemini:           gemini mcp add --transport http ${name} ${endpoint}
+streamable-http:  { mcpServers: { [name]: { type: 'http', url: endpoint } } }
+curl:             curl -X POST ${endpoint} ... (initialize probe)
 ```
 
 ---
@@ -306,7 +304,7 @@ z.object({
     'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
   ),
   client: z.enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http']).optional().describe(
-    'Return the install snippet for this specific client only. Omit for all supported clients.'
+    'Return install snippets for this client only (both local and remote transports when available). Omit for all supported clients.'
   ),
 })
 ```
@@ -504,7 +502,7 @@ Portfolio side:
 
 - **README is marketing-shaped.** The hosted endpoint is the product. The README's job is to convince an evaluator the endpoint is worth one line in their client config. Self-hosting docs collapse to a bottom section.
 
-- **Catalog is hosted-only.** All entries in fleet.json come from the live `GET /mcp` + `tools/list` calls during the portfolio build. Non-hosted servers (npm-only utilities) are excluded from v0. Including them requires a parallel data source and is deferred.
+- **Catalog is hosted-only.** All entries in fleet.json come from the live `GET /mcp` + `tools/list` calls during the portfolio build. Non-hosted servers (npm-only utilities) are excluded from v0. Including them requires a parallel data source and is deferred. *(Update: the server-side schema now models local-only servers — `endpoint` is optional and `describe` renders stdio snippets for every record. The remaining work to actually list npm-only servers is the portfolio ingestion path.)*
 
 - **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. `CatalogService.initialize()` validates server names at load time and rejects entries with underscores so the heuristic stays reliable.
 
@@ -518,7 +516,7 @@ Portfolio side:
 
 3. **Similarity floor calibration.** Default `0.3` is a guess. After a few real query patterns are observed, tune up or down based on the false-positive vs false-negative tradeoff.
 
-4. **Adding npm-only servers later.** Roughly 25 servers in the wider cyanheads collection are npm-only (git, obsidian, clipboard, etc.). Including them needs `endpoint` to become optional, a separate ingestion path, and a UX decision about how `describe` returns "no hosted endpoint, run via npx." Deferred to a follow-up.
+4. **Adding npm-only servers later.** *(Consumer side resolved.)* `endpoint` is now optional and every record gets local (stdio) `npx` snippets built from `npm`, with `requiredEnvVars` scaffolded into the JSON configs; `describe` groups snippets into local vs remote. What remains is the producer side: `caseyjhand-portfolio/scripts/build-fleet-json.ts` must emit endpoint-less records for local-only servers (a stdio ingestion path for their `tools/list`) and populate `requiredEnvVars`. Until then no local-only server appears in the fleet, but the consumer is ready for them.
 
 ---
 

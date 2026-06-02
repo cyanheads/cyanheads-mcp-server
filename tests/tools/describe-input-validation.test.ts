@@ -216,7 +216,7 @@ describe('cyanheads_describe — handler behavior', () => {
     }
   });
 
-  it('snippet filtered by client returns exactly one snippet', async () => {
+  it('filtering by client returns that client across local and remote transports', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'arxiv-mcp-server',
@@ -225,12 +225,13 @@ describe('cyanheads_describe — handler behavior', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      expect(result.installSnippets).toHaveLength(1);
-      expect(result.installSnippets[0]!.client).toBe('cursor');
+      expect(result.installSnippets).toHaveLength(2);
+      expect(result.installSnippets.every((s) => s.client === 'cursor')).toBe(true);
+      expect(result.installSnippets.map((s) => s.transport).sort()).toEqual(['http', 'stdio']);
     }
   });
 
-  it('endpoint in snippet reflects actual endpoint from catalog', async () => {
+  it('http snippet reflects the actual endpoint from the catalog', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'arxiv-mcp-server',
@@ -239,7 +240,8 @@ describe('cyanheads_describe — handler behavior', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      expect(result.installSnippets[0]!.payload).toContain('arxiv.caseyjhand.com');
+      const http = result.installSnippets.find((s) => s.transport === 'http');
+      expect(http?.payload).toContain('arxiv.caseyjhand.com');
     }
   });
 });

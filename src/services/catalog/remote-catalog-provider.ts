@@ -27,11 +27,12 @@ const CatalogRecordSchema = z.object({
   displayName: z.string(),
   description: z.string(),
   category: z.enum(['research', 'government', 'public-data', 'utility']),
-  endpoint: z.string(),
+  endpoint: z.string().optional(),
   npm: z.string(),
   github: z.string(),
   version: z.string(),
   auth: z.string(),
+  requiredEnvVars: z.array(z.string()).optional(),
   embedding: EmbeddingSchema,
   tools: z.array(CatalogToolSchema),
 });

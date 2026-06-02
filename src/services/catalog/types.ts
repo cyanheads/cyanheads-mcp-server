@@ -24,22 +24,28 @@ export interface CatalogTool {
   name: string;
 }
 
-/** Per-client install snippet. */
+/** Per-client install snippet for one transport. */
 export interface InstallSnippet {
   /** MCP client identifier. */
   client: ClientId;
   /** Human-readable label for the install method. */
   label: string;
   /**
-   * The install payload. Shape varies by client:
-   * - claude-code: CLI command (`claude mcp add --transport http <name> <url>`)
-   * - codex: CLI command (`codex mcp add <name> --url <url>`)
-   * - cursor: JSON fragment for `.cursor/mcp.json` mcpServers block (no `type` field)
-   * - curl: HTTP `initialize` request for connectivity testing
-   * - gemini: CLI command (`gemini mcp add --transport http <name> <url>`)
-   * - streamable-http: generic JSON fragment for any MCP HTTP client (Claude Desktop, Cline, mcp-remote)
+   * The install payload. Shape varies by client and transport:
+   * - claude-code: CLI — stdio `claude mcp add --transport stdio <name> -- npx -y <pkg>`; http `claude mcp add --transport http <name> <url>`
+   * - codex: CLI — stdio `codex mcp add <name> -- npx -y <pkg>`; http `codex mcp add <name> --url <url>`
+   * - cursor: `mcpServers` JSON, no `type` field — stdio `{ command, args }`; http `{ url }`
+   * - gemini: CLI — stdio `gemini mcp add <name> npx -y <pkg>`; http `gemini mcp add --transport http <name> <url>`
+   * - streamable-http: generic `mcpServers` JSON with `type` — stdio `{ type: 'stdio', command, args }`; http `{ type: 'http', url }`
+   * - curl: http only — `initialize` connectivity probe against the endpoint
    */
   payload: string;
+  /**
+   * Transport this snippet installs.
+   * - `stdio`: local install via `npx -y <pkg>` — available for every published server.
+   * - `http`: remote connection to the hosted endpoint — present only when the record has an `endpoint`.
+   */
+  transport: 'stdio' | 'http';
 }
 
 /** One fleet server record, mirroring the fleet.json servers[] entry. */
@@ -60,14 +66,23 @@ export interface CatalogRecord {
    * `${displayName}\n${description}`. Length matches FleetPayload.embeddingDims.
    */
   embedding: number[];
-  /** Streamable HTTP endpoint — always present; the catalog covers hosted servers only. */
-  endpoint: string;
+  /**
+   * Streamable HTTP endpoint for the hosted deployment. Optional: present for hosted
+   * servers (drives the remote/HTTP snippets), absent for local-only (stdio) servers.
+   */
+  endpoint?: string;
   /** GitHub repository URL. */
   github: string;
   /** Package name without scope (e.g. "arxiv-mcp-server"). */
   name: string;
-  /** npm package name (scoped, e.g. "@cyanheads/arxiv-mcp-server"). */
+  /** npm package name (scoped, e.g. "@cyanheads/arxiv-mcp-server"). Drives the local stdio snippets. */
   npm: string;
+  /**
+   * Env var names the local (stdio) install requires (e.g. ["MAILCHIMP_API_KEY"]).
+   * Surfaced in the local-install snippets so the caller knows what to set. Optional —
+   * absent or empty when the server needs no configuration.
+   */
+  requiredEnvVars?: string[];
   /** Tool entries for this server, each with its own embedding. */
   tools: CatalogTool[];
   /** Published version captured at fleet-generation time (e.g. "1.2.7"). */

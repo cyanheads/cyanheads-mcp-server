@@ -146,6 +146,55 @@ describe('RemoteJsonCatalogProvider.load()', () => {
     });
   });
 
+  describe('optional fields (local-only servers)', () => {
+    const LOCAL_ONLY_PAYLOAD = {
+      ...MINIMAL_PAYLOAD,
+      servers: [
+        {
+          name: 'mailchimp-mcp-server',
+          displayName: 'Mailchimp',
+          description: 'Manage Mailchimp audiences.',
+          category: 'utility',
+          npm: '@cyanheads/mailchimp-mcp-server',
+          github: 'https://github.com/cyanheads/mailchimp-mcp-server',
+          version: '1.0.0',
+          auth: 'none',
+          requiredEnvVars: ['MAILCHIMP_API_KEY'],
+          embedding: [0, 1, 0, 0],
+          tools: [{ name: 'mailchimp_ping', description: 'Ping.', embedding: [0, 1, 0, 0] }],
+        },
+      ],
+    };
+
+    it('accepts a record with no endpoint and surfaces requiredEnvVars', async () => {
+      mockFetchOk(LOCAL_ONLY_PAYLOAD);
+      const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
+      const payload = await provider.load();
+      expect(payload.servers[0]!.endpoint).toBeUndefined();
+      expect(payload.servers[0]!.requiredEnvVars).toEqual(['MAILCHIMP_API_KEY']);
+    });
+
+    it('accepts a hosted record with an endpoint and no requiredEnvVars', async () => {
+      mockFetchOk(MINIMAL_PAYLOAD);
+      const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
+      const payload = await provider.load();
+      expect(payload.servers[0]!.endpoint).toBe('https://earthquake.caseyjhand.com/mcp');
+      expect(payload.servers[0]!.requiredEnvVars).toBeUndefined();
+    });
+
+    it('rejects requiredEnvVars when it is not an array of strings', async () => {
+      const bad = {
+        ...MINIMAL_PAYLOAD,
+        servers: [{ ...MINIMAL_PAYLOAD.servers[0], requiredEnvVars: 'MAILCHIMP_API_KEY' }],
+      };
+      mockFetchOk(bad);
+      const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
+      await expect(provider.load()).rejects.toMatchObject({
+        message: expect.stringContaining('validation'),
+      });
+    });
+  });
+
   describe('network errors', () => {
     it('throws McpError wrapping a TypeError on network rejection', async () => {
       mockFetchReject(new TypeError('Failed to fetch'));

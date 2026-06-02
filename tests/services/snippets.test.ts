@@ -1,14 +1,16 @@
 /**
- * @fileoverview Unit tests for the snippet factory registry (snippets.ts).
- * Pure functions — no I/O, no mocks needed.
+ * @fileoverview Unit tests for the snippet factories (snippets.ts).
+ * Pure functions — no I/O, no mocks needed. Covers both transports: local (stdio,
+ * from `npm`) for every server, and remote (http, from `endpoint`) for hosted servers.
  * @module tests/services/snippets.test
  */
 
 import { describe, expect, it } from 'vitest';
-import { buildAllSnippets, SNIPPET_REGISTRY } from '@/services/catalog/snippets.js';
+import { buildAllSnippets } from '@/services/catalog/snippets.js';
 import type { CatalogRecord } from '@/services/catalog/types.js';
 
-const RECORD: CatalogRecord = {
+/** Hosted server — has an endpoint, so it gets both stdio and http snippets. */
+const HOSTED: CatalogRecord = {
   name: 'earthquake-mcp-server',
   displayName: 'Earthquake',
   description: 'Search USGS seismic data.',
@@ -22,143 +24,46 @@ const RECORD: CatalogRecord = {
   tools: [],
 };
 
-describe('SNIPPET_REGISTRY', () => {
-  it('contains exactly the six supported client keys', () => {
-    const keys = Object.keys(SNIPPET_REGISTRY).sort();
-    expect(keys).toEqual(['claude-code', 'codex', 'curl', 'cursor', 'gemini', 'streamable-http']);
+/** Local-only server — no endpoint, requires an env var. Gets stdio snippets only. */
+const { endpoint: _noEndpoint, ...HOSTED_WITHOUT_ENDPOINT } = HOSTED;
+const LOCAL_ONLY: CatalogRecord = {
+  ...HOSTED_WITHOUT_ENDPOINT,
+  name: 'mailchimp-mcp-server',
+  npm: '@cyanheads/mailchimp-mcp-server',
+  github: 'https://github.com/cyanheads/mailchimp-mcp-server',
+  requiredEnvVars: ['MAILCHIMP_API_KEY'],
+};
+
+const stdioFor = (record: CatalogRecord, client: string) =>
+  buildAllSnippets(record).find((s) => s.transport === 'stdio' && s.client === client);
+const httpFor = (record: CatalogRecord, client: string) =>
+  buildAllSnippets(record).find((s) => s.transport === 'http' && s.client === client);
+
+describe('buildAllSnippets — hosted server (endpoint present)', () => {
+  it('returns 5 local (stdio) + 6 remote (http) = 11 snippets', () => {
+    expect(buildAllSnippets(HOSTED)).toHaveLength(11);
   });
 
-  describe('claude-code', () => {
-    it('produces the correct CLI command', () => {
-      const snippet = SNIPPET_REGISTRY['claude-code']!(RECORD);
-      expect(snippet.client).toBe('claude-code');
-      expect(snippet.label).toBe('Claude Code (CLI)');
-      expect(snippet.payload).toBe(
-        'claude mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
-      );
-    });
-
-    it('uses --transport http (not sse or stdio)', () => {
-      const snippet = SNIPPET_REGISTRY['claude-code']!(RECORD);
-      expect(snippet.payload).toContain('--transport http');
-      expect(snippet.payload).not.toContain('sse');
-    });
-
-    it('embeds the server name and endpoint into the command', () => {
-      const custom: CatalogRecord = {
-        ...RECORD,
-        name: 'wikipedia-mcp-server',
-        endpoint: 'https://wikipedia.caseyjhand.com/mcp',
-      };
-      const snippet = SNIPPET_REGISTRY['claude-code']!(custom);
-      expect(snippet.payload).toContain('wikipedia-mcp-server');
-      expect(snippet.payload).toContain('https://wikipedia.caseyjhand.com/mcp');
-    });
+  it('emits all local snippets before any remote snippet', () => {
+    const snippets = buildAllSnippets(HOSTED);
+    const firstHttp = snippets.findIndex((s) => s.transport === 'http');
+    const lastStdio = snippets.map((s) => s.transport).lastIndexOf('stdio');
+    expect(lastStdio).toBeLessThan(firstHttp);
   });
 
-  describe('codex', () => {
-    it('produces the correct CLI command', () => {
-      const snippet = SNIPPET_REGISTRY['codex']!(RECORD);
-      expect(snippet.client).toBe('codex');
-      expect(snippet.label).toBe('Codex (CLI)');
-      expect(snippet.payload).toBe(
-        'codex mcp add earthquake-mcp-server --url https://earthquake.caseyjhand.com/mcp',
-      );
-    });
-
-    it('puts name before --url', () => {
-      const snippet = SNIPPET_REGISTRY['codex']!(RECORD);
-      const nameIdx = snippet.payload.indexOf('earthquake-mcp-server');
-      const urlIdx = snippet.payload.indexOf('--url');
-      expect(nameIdx).toBeLessThan(urlIdx);
-    });
+  it('local snippets cover the five non-curl clients', () => {
+    const clients = buildAllSnippets(HOSTED)
+      .filter((s) => s.transport === 'stdio')
+      .map((s) => s.client)
+      .sort();
+    expect(clients).toEqual(['claude-code', 'codex', 'cursor', 'gemini', 'streamable-http']);
   });
 
-  describe('cursor', () => {
-    it('produces valid JSON', () => {
-      const snippet = SNIPPET_REGISTRY['cursor']!(RECORD);
-      expect(snippet.client).toBe('cursor');
-      expect(() => JSON.parse(snippet.payload)).not.toThrow();
-    });
-
-    it('has mcpServers.<name>.url but no type field', () => {
-      const snippet = SNIPPET_REGISTRY['cursor']!(RECORD);
-      const parsed = JSON.parse(snippet.payload);
-      const server = parsed.mcpServers['earthquake-mcp-server'];
-      expect(server).toEqual({ url: 'https://earthquake.caseyjhand.com/mcp' });
-      expect(server.type).toBeUndefined();
-    });
-  });
-
-  describe('streamable-http', () => {
-    it('produces valid JSON with type "http"', () => {
-      const snippet = SNIPPET_REGISTRY['streamable-http']!(RECORD);
-      expect(snippet.client).toBe('streamable-http');
-      expect(() => JSON.parse(snippet.payload)).not.toThrow();
-      const parsed = JSON.parse(snippet.payload);
-      const server = parsed.mcpServers['earthquake-mcp-server'];
-      expect(server).toEqual({ type: 'http', url: 'https://earthquake.caseyjhand.com/mcp' });
-    });
-
-    it('label mentions Claude Desktop', () => {
-      const snippet = SNIPPET_REGISTRY['streamable-http']!(RECORD);
-      expect(snippet.label).toContain('Claude Desktop');
-    });
-  });
-
-  describe('curl', () => {
-    it('starts with curl -X POST <endpoint>', () => {
-      const snippet = SNIPPET_REGISTRY['curl']!(RECORD);
-      expect(snippet.client).toBe('curl');
-      expect(snippet.payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
-    });
-
-    it('includes the MCP-Protocol-Version header', () => {
-      const snippet = SNIPPET_REGISTRY['curl']!(RECORD);
-      expect(snippet.payload).toContain('MCP-Protocol-Version: 2025-11-25');
-    });
-
-    it('includes Content-Type application/json', () => {
-      const snippet = SNIPPET_REGISTRY['curl']!(RECORD);
-      expect(snippet.payload).toContain('Content-Type: application/json');
-    });
-
-    it('body contains an initialize method', () => {
-      const snippet = SNIPPET_REGISTRY['curl']!(RECORD);
-      expect(snippet.payload).toContain('"method":"initialize"');
-    });
-
-    it('body protocolVersion matches the header version', () => {
-      const snippet = SNIPPET_REGISTRY['curl']!(RECORD);
-      expect(snippet.payload).toContain('"protocolVersion":"2025-11-25"');
-    });
-
-    it('never emits the legacy SSE transport tag', () => {
-      const snippet = SNIPPET_REGISTRY['curl']!(RECORD);
-      expect(snippet.payload).not.toContain('sse');
-    });
-  });
-
-  describe('gemini', () => {
-    it('produces the correct CLI command', () => {
-      const snippet = SNIPPET_REGISTRY['gemini']!(RECORD);
-      expect(snippet.client).toBe('gemini');
-      expect(snippet.payload).toBe(
-        'gemini mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
-      );
-    });
-  });
-});
-
-describe('buildAllSnippets', () => {
-  it('returns exactly six snippets', () => {
-    const snippets = buildAllSnippets(RECORD);
-    expect(snippets).toHaveLength(6);
-  });
-
-  it('covers all supported client IDs', () => {
-    const snippets = buildAllSnippets(RECORD);
-    const clients = snippets.map((s) => s.client).sort();
+  it('remote snippets cover all six clients including curl', () => {
+    const clients = buildAllSnippets(HOSTED)
+      .filter((s) => s.transport === 'http')
+      .map((s) => s.client)
+      .sort();
     expect(clients).toEqual([
       'claude-code',
       'codex',
@@ -169,58 +74,166 @@ describe('buildAllSnippets', () => {
     ]);
   });
 
-  it('every snippet has a non-empty payload', () => {
-    const snippets = buildAllSnippets(RECORD);
-    for (const s of snippets) {
+  it('every snippet carries transport, client, label, and a non-empty payload', () => {
+    for (const s of buildAllSnippets(HOSTED)) {
+      expect(['stdio', 'http']).toContain(s.transport);
+      expect(s.client.length).toBeGreaterThan(0);
+      expect(s.label.length).toBeGreaterThan(0);
       expect(s.payload.length).toBeGreaterThan(0);
     }
   });
 
-  it('every snippet has a non-empty label', () => {
-    const snippets = buildAllSnippets(RECORD);
-    for (const s of snippets) {
-      expect(s.label.length).toBeGreaterThan(0);
-    }
+  it('never emits the legacy SSE transport tag', () => {
+    for (const s of buildAllSnippets(HOSTED)) expect(s.payload).not.toContain('sse');
+  });
+});
+
+describe('local (stdio) snippet payloads', () => {
+  it('claude-code uses `claude mcp add --transport stdio <name> -- npx -y <pkg>`', () => {
+    expect(stdioFor(HOSTED, 'claude-code')?.payload).toBe(
+      'claude mcp add --transport stdio earthquake-mcp-server -- npx -y @cyanheads/earthquake-mcp-server',
+    );
   });
 
-  it('no snippet leaks the record description or embedding', () => {
-    const snippets = buildAllSnippets(RECORD);
-    for (const s of snippets) {
-      expect(s.payload).not.toContain(RECORD.description);
-      // Embeddings are numeric arrays; ensure no [1,0,0,0] literal leaks
-      expect(s.payload).not.toContain('[1,0,0,0]');
-    }
+  it('codex uses `codex mcp add <name> -- npx -y <pkg>`', () => {
+    expect(stdioFor(HOSTED, 'codex')?.payload).toBe(
+      'codex mcp add earthquake-mcp-server -- npx -y @cyanheads/earthquake-mcp-server',
+    );
   });
 
-  it('reflects updated name and endpoint when record differs', () => {
-    const custom: CatalogRecord = {
-      ...RECORD,
-      name: 'pubmed-mcp-server',
-      endpoint: 'https://pubmed.caseyjhand.com/mcp',
-    };
-    const snippets = buildAllSnippets(custom);
-    for (const s of snippets) {
-      expect(s.payload).toContain('pubmed.caseyjhand.com');
+  it('gemini uses `gemini mcp add <name> npx -y <pkg>`', () => {
+    expect(stdioFor(HOSTED, 'gemini')?.payload).toBe(
+      'gemini mcp add earthquake-mcp-server npx -y @cyanheads/earthquake-mcp-server',
+    );
+  });
+
+  it('cursor JSON carries command/args, no type and no url', () => {
+    const parsed = JSON.parse(stdioFor(HOSTED, 'cursor')!.payload);
+    expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+      command: 'npx',
+      args: ['-y', '@cyanheads/earthquake-mcp-server'],
+    });
+  });
+
+  it('generic (streamable-http) JSON carries type "stdio" + command/args', () => {
+    const parsed = JSON.parse(stdioFor(HOSTED, 'streamable-http')!.payload);
+    expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', '@cyanheads/earthquake-mcp-server'],
+    });
+  });
+
+  it('no stdio payload references the hosted endpoint', () => {
+    for (const s of buildAllSnippets(HOSTED).filter((s) => s.transport === 'stdio')) {
       expect(s.payload).not.toContain('earthquake.caseyjhand.com');
     }
   });
 });
 
-describe('security: no secrets in snippet output', () => {
-  it('no env var names appear in payloads', () => {
-    const snippets = buildAllSnippets(RECORD);
-    const sensitivePatterns = [
-      /API_KEY/i,
-      /SECRET/i,
-      /TOKEN/i,
-      /PASSWORD/i,
-      /CATALOG_URL/i,
-      /EMBEDDING_MODEL/i,
-    ];
-    for (const s of snippets) {
-      for (const pattern of sensitivePatterns) {
-        expect(s.payload).not.toMatch(pattern);
-      }
+describe('remote (http) snippet payloads', () => {
+  it('claude-code uses `claude mcp add --transport http <name> <url>`', () => {
+    expect(httpFor(HOSTED, 'claude-code')?.payload).toBe(
+      'claude mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
+    );
+  });
+
+  it('codex uses `codex mcp add <name> --url <url>`', () => {
+    expect(httpFor(HOSTED, 'codex')?.payload).toBe(
+      'codex mcp add earthquake-mcp-server --url https://earthquake.caseyjhand.com/mcp',
+    );
+  });
+
+  it('gemini uses `gemini mcp add --transport http <name> <url>`', () => {
+    expect(httpFor(HOSTED, 'gemini')?.payload).toBe(
+      'gemini mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
+    );
+  });
+
+  it('cursor JSON carries url and no type field', () => {
+    const parsed = JSON.parse(httpFor(HOSTED, 'cursor')!.payload);
+    expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+      url: 'https://earthquake.caseyjhand.com/mcp',
+    });
+  });
+
+  it('generic (streamable-http) JSON carries type "http" + url', () => {
+    const parsed = JSON.parse(httpFor(HOSTED, 'streamable-http')!.payload);
+    expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+      type: 'http',
+      url: 'https://earthquake.caseyjhand.com/mcp',
+    });
+  });
+
+  it('curl POSTs initialize with the MCP-Protocol-Version header', () => {
+    const payload = httpFor(HOSTED, 'curl')!.payload;
+    expect(payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
+    expect(payload).toContain('Content-Type: application/json');
+    expect(payload).toContain('MCP-Protocol-Version: 2025-11-25');
+    expect(payload).toContain('"method":"initialize"');
+    expect(payload).toContain('"protocolVersion":"2025-11-25"');
+  });
+});
+
+describe('buildAllSnippets — local-only server (no endpoint)', () => {
+  it('returns only the five stdio snippets — no http, no curl', () => {
+    const snippets = buildAllSnippets(LOCAL_ONLY);
+    expect(snippets).toHaveLength(5);
+    expect(snippets.every((s) => s.transport === 'stdio')).toBe(true);
+    expect(snippets.some((s) => s.client === 'curl')).toBe(false);
+  });
+
+  it('scaffolds required env vars as empty-valued keys in the JSON configs', () => {
+    const cursor = JSON.parse(stdioFor(LOCAL_ONLY, 'cursor')!.payload);
+    expect(cursor.mcpServers['mailchimp-mcp-server'].env).toEqual({ MAILCHIMP_API_KEY: '' });
+    const generic = JSON.parse(stdioFor(LOCAL_ONLY, 'streamable-http')!.payload);
+    expect(generic.mcpServers['mailchimp-mcp-server'].env).toEqual({ MAILCHIMP_API_KEY: '' });
+  });
+
+  it('keeps CLI snippets bare — no env inlined into the command', () => {
+    expect(stdioFor(LOCAL_ONLY, 'claude-code')?.payload).toBe(
+      'claude mcp add --transport stdio mailchimp-mcp-server -- npx -y @cyanheads/mailchimp-mcp-server',
+    );
+  });
+
+  it('omits the env block entirely when no env vars are required', () => {
+    const { requiredEnvVars: _drop, ...noEnv } = LOCAL_ONLY;
+    const cursor = JSON.parse(stdioFor(noEnv, 'cursor')!.payload);
+    expect(cursor.mcpServers['mailchimp-mcp-server'].env).toBeUndefined();
+  });
+});
+
+describe('buildAllSnippets — content safety', () => {
+  it('reflects the record name and npm package, not a stale one', () => {
+    const custom: CatalogRecord = {
+      ...HOSTED,
+      name: 'pubmed-mcp-server',
+      npm: '@cyanheads/pubmed-mcp-server',
+      endpoint: 'https://pubmed.caseyjhand.com/mcp',
+    };
+    for (const s of buildAllSnippets(custom)) {
+      expect(s.payload).toContain('pubmed');
+      expect(s.payload).not.toContain('earthquake');
+    }
+  });
+
+  it('no snippet leaks the record description or embedding', () => {
+    for (const s of buildAllSnippets(HOSTED)) {
+      expect(s.payload).not.toContain(HOSTED.description);
+      expect(s.payload).not.toContain('[1,0,0,0]');
+    }
+  });
+
+  it("never leaks the server's own config vars, and env scaffold values are always empty", () => {
+    // A fleet record's required env var NAMES may appear as empty-valued JSON keys —
+    // that is the point. What must never appear: a secret VALUE, or the server's own
+    // config variables (CATALOG_URL, EMBEDDING_MODEL_ID, SIMILARITY_FLOOR).
+    for (const s of buildAllSnippets(LOCAL_ONLY)) {
+      expect(s.payload).not.toMatch(/CATALOG_URL/i);
+      expect(s.payload).not.toMatch(/EMBEDDING_MODEL/i);
+      expect(s.payload).not.toMatch(/SIMILARITY_FLOOR/i);
+      const valued = s.payload.match(/"MAILCHIMP_API_KEY":\s*"([^"]*)"/);
+      if (valued) expect(valued[1]).toBe('');
     }
   });
 });

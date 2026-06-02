@@ -14,10 +14,11 @@ import { buildAllSnippets } from '@/services/catalog/snippets.js';
 export const describeTool = tool('cyanheads_describe', {
   title: 'Describe Fleet Tool or Server',
   description:
-    'Return the description, connection URL, and per-client install snippets for a named tool or ' +
-    'server. For tools: the description and the server it belongs to. ' +
-    'For servers: connection URL and install snippets for every supported client (or one specific ' +
-    'client when the client parameter is specified). Call cyanheads_search first to find valid names.',
+    'Return the description and install snippets for a named tool or server. For tools: the ' +
+    'description and the server it belongs to. For servers: local (stdio, via npx) install ' +
+    'snippets for every published server, plus remote (HTTP) connection snippets when a hosted ' +
+    'endpoint exists — for every supported client, or one client via the client parameter. ' +
+    'Call cyanheads_search first to find valid names.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   auth: ['tool:cyanheads_describe:read'],
 
@@ -40,49 +41,76 @@ export const describeTool = tool('cyanheads_describe', {
       .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
       .optional()
       .describe(
-        'Return the install snippet for this specific client only. ' +
-          'Omit to return snippets for all supported clients.',
+        'Return install snippets for this client only (both local and remote transports when ' +
+          'available). Omit to return snippets for all supported clients.',
       ),
   }),
 
   output: z.object({
     result: z
       .discriminatedUnion('kind', [
-        z.object({
-          kind: z.literal('tool').describe('Resolved as a tool entry.'),
-          name: z.string().describe('Resolved name (as looked up).'),
-          description: z.string().describe('Brief description of what the tool does.'),
-          server: z.string().describe('Server package name that owns this tool.'),
-        }),
-        z.object({
-          kind: z.literal('server').describe('Resolved as a server entry.'),
-          name: z.string().describe('Resolved name (as looked up).'),
-          displayName: z.string().describe('Human-readable server label.'),
-          description: z.string().describe('Brief description of what the server does.'),
-          version: z.string().describe('Published version captured at fleet-generation time.'),
-          npm: z.string().describe('npm package name (e.g. "@cyanheads/arxiv-mcp-server").'),
-          github: z.string().describe('GitHub repository URL.'),
-          endpoint: z.string().describe('Streamable HTTP endpoint for the hosted deployment.'),
-          auth: z
-            .string()
-            .describe('Auth requirement for the hosted deployment (currently always "none").'),
-          toolCount: z.number().describe('Number of tools exposed by this server.'),
-          installSnippets: z
-            .array(
-              z
-                .object({
-                  client: z
-                    .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
-                    .describe('MCP client this snippet targets.'),
-                  label: z.string().describe('Human-readable install method label.'),
-                  payload: z.string().describe('Install payload (JSON fragment or CLI command).'),
-                })
-                .describe('A single install instruction entry.'),
-            )
-            .describe(
-              'Install instructions, one per supported client (or filtered by input.client).',
-            ),
-        }),
+        z
+          .object({
+            kind: z.literal('tool').describe('Resolved as a tool entry.'),
+            name: z.string().describe('Resolved name (as looked up).'),
+            description: z.string().describe('Brief description of what the tool does.'),
+            server: z.string().describe('Server package name that owns this tool.'),
+          })
+          .describe('A resolved tool entry — its description and the server that owns it.'),
+        z
+          .object({
+            kind: z.literal('server').describe('Resolved as a server entry.'),
+            name: z.string().describe('Resolved name (as looked up).'),
+            displayName: z.string().describe('Human-readable server label.'),
+            description: z.string().describe('Brief description of what the server does.'),
+            version: z.string().describe('Published version captured at fleet-generation time.'),
+            npm: z
+              .string()
+              .describe(
+                'npm package name (e.g. "@cyanheads/arxiv-mcp-server"). Drives the local stdio snippets.',
+              ),
+            github: z.string().describe('GitHub repository URL.'),
+            endpoint: z
+              .string()
+              .optional()
+              .describe(
+                'Streamable HTTP endpoint for the hosted deployment. Absent for local-only (stdio) servers.',
+              ),
+            auth: z
+              .string()
+              .describe('Auth requirement for the hosted deployment (currently always "none").'),
+            requiredEnvVars: z
+              .array(z.string())
+              .optional()
+              .describe(
+                'Env var names the local (stdio) install requires (e.g. ["MAILCHIMP_API_KEY"]). Absent when none.',
+              ),
+            toolCount: z.number().describe('Number of tools exposed by this server.'),
+            installSnippets: z
+              .array(
+                z
+                  .object({
+                    client: z
+                      .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
+                      .describe('MCP client this snippet targets.'),
+                    transport: z
+                      .enum(['stdio', 'http'])
+                      .describe(
+                        'Transport this snippet installs — stdio (local) or http (remote).',
+                      ),
+                    label: z.string().describe('Human-readable install method label.'),
+                    payload: z.string().describe('Install payload (JSON fragment or CLI command).'),
+                  })
+                  .describe('A single install instruction entry.'),
+              )
+              .describe(
+                'Install instructions: local (stdio) snippets for every server, plus remote (HTTP) ' +
+                  'snippets when an endpoint exists. Filtered to one client when input.client is set.',
+              ),
+          })
+          .describe(
+            'A resolved server entry — metadata, optional hosted endpoint, and per-client install snippets.',
+          ),
       ])
       .describe(
         'The resolved entry — either a tool detail or a server detail depending on the resolved kind.',
@@ -166,8 +194,11 @@ export const describeTool = tool('cyanheads_describe', {
           version: serverEntry.version,
           npm: serverEntry.npm,
           github: serverEntry.github,
-          endpoint: serverEntry.endpoint,
+          ...(serverEntry.endpoint ? { endpoint: serverEntry.endpoint } : {}),
           auth: serverEntry.auth,
+          ...(serverEntry.requiredEnvVars?.length
+            ? { requiredEnvVars: serverEntry.requiredEnvVars }
+            : {}),
           toolCount: serverEntry.tools.length,
           installSnippets: snippets,
         },
@@ -200,18 +231,46 @@ export const describeTool = tool('cyanheads_describe', {
       lines.push(`**GitHub:** ${result.github}`);
       lines.push(`**Auth:** ${result.auth}`);
       lines.push(`**Tool count:** ${result.toolCount}`);
-      lines.push(`**Endpoint:** ${result.endpoint}`);
       lines.push('');
       lines.push('## Description');
       lines.push(result.description);
       lines.push('');
-      lines.push('## Install Snippets');
-      for (const snippet of result.installSnippets) {
-        lines.push(`### ${snippet.label} (${snippet.client})`);
-        lines.push('```');
-        lines.push(snippet.payload);
-        lines.push('```');
+
+      const local = result.installSnippets.filter((s) => s.transport === 'stdio');
+      const remote = result.installSnippets.filter((s) => s.transport === 'http');
+
+      if (local.length > 0) {
+        lines.push('## Local install (stdio)');
+        lines.push(
+          'Run locally via npx — available for every published server, no hosting required.',
+        );
+        if (result.requiredEnvVars?.length) {
+          lines.push('');
+          lines.push(
+            `**Required env vars:** ${result.requiredEnvVars.join(', ')} — set these for the server to work.`,
+          );
+        }
         lines.push('');
+        for (const snippet of local) {
+          lines.push(`### ${snippet.label} (${snippet.client})`);
+          lines.push('```');
+          lines.push(snippet.payload);
+          lines.push('```');
+          lines.push('');
+        }
+      }
+
+      if (result.endpoint) {
+        lines.push('## Remote install (HTTP)');
+        lines.push(`**Endpoint:** ${result.endpoint}`);
+        lines.push('');
+        for (const snippet of remote) {
+          lines.push(`### ${snippet.label} (${snippet.client})`);
+          lines.push('```');
+          lines.push(snippet.payload);
+          lines.push('```');
+          lines.push('');
+        }
       }
     }
 

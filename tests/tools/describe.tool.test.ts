@@ -78,6 +78,26 @@ const FLEET_PAYLOAD: FleetPayload = {
         },
       ],
     },
+    {
+      // Local-only server: no endpoint, requires an env var for the local install.
+      name: 'mailchimp-mcp-server',
+      displayName: 'Mailchimp',
+      description: 'Manage Mailchimp audiences and campaigns.',
+      category: 'utility',
+      npm: '@cyanheads/mailchimp-mcp-server',
+      github: 'https://github.com/cyanheads/mailchimp-mcp-server',
+      version: '1.0.0',
+      auth: 'none',
+      requiredEnvVars: ['MAILCHIMP_API_KEY'],
+      embedding: E1,
+      tools: [
+        {
+          name: 'mailchimp_list_audiences',
+          description: 'List Mailchimp audiences.',
+          embedding: E1,
+        },
+      ],
+    },
   ],
 };
 
@@ -113,7 +133,7 @@ describe('cyanheads_describe', () => {
     vi.restoreAllMocks();
   });
 
-  it('resolves a server by name', async () => {
+  it('resolves a hosted server by name', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
     const { result } = await describeTool.handler(input, ctx);
@@ -128,7 +148,8 @@ describe('cyanheads_describe', () => {
       expect(result.endpoint).toBe('https://earthquake.caseyjhand.com/mcp');
       expect(result.auth).toBe('none');
       expect(result.toolCount).toBe(2);
-      expect(result.installSnippets.length).toBeGreaterThan(0);
+      // 5 local (stdio) + 6 remote (http)
+      expect(result.installSnippets).toHaveLength(11);
     }
   });
 
@@ -159,7 +180,7 @@ describe('cyanheads_describe', () => {
     expect(result.kind).toBe('tool');
   });
 
-  it('filters install snippets by client', async () => {
+  it('filtering by client returns that client across both transports', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -170,13 +191,13 @@ describe('cyanheads_describe', () => {
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
-      expect(result.installSnippets).toHaveLength(1);
-      expect(result.installSnippets[0].client).toBe('claude-code');
-      expect(result.installSnippets[0].payload).toContain('claude mcp add');
+      expect(result.installSnippets).toHaveLength(2);
+      expect(result.installSnippets.every((s) => s.client === 'claude-code')).toBe(true);
+      expect(result.installSnippets.map((s) => s.transport).sort()).toEqual(['http', 'stdio']);
     }
   });
 
-  it('emits the Streamable HTTP transport tag, never the legacy SSE one', async () => {
+  it('http snippets target the endpoint; no snippet emits the legacy SSE tag', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
     const { result } = await describeTool.handler(input, ctx);
@@ -185,12 +206,14 @@ describe('cyanheads_describe', () => {
     if (result.kind === 'server') {
       for (const snippet of result.installSnippets) {
         expect(snippet.payload).not.toContain('sse');
-        expect(snippet.payload).toContain('earthquake.caseyjhand.com');
+        if (snippet.transport === 'http') {
+          expect(snippet.payload).toContain('earthquake.caseyjhand.com');
+        }
       }
     }
   });
 
-  it('claude-code snippet matches `claude mcp add --transport http <name> <url>`', async () => {
+  it('claude-code local snippet uses `claude mcp add --transport stdio <name> -- npx -y <pkg>`', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -199,13 +222,30 @@ describe('cyanheads_describe', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      expect(result.installSnippets[0]?.payload).toBe(
+      const stdio = result.installSnippets.find((s) => s.transport === 'stdio');
+      expect(stdio?.payload).toBe(
+        'claude mcp add --transport stdio earthquake-mcp-server -- npx -y @cyanheads/earthquake-mcp-server',
+      );
+    }
+  });
+
+  it('claude-code remote snippet uses `claude mcp add --transport http <name> <url>`', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'server',
+      client: 'claude-code',
+    });
+    const { result } = await describeTool.handler(input, ctx);
+    if (result.kind === 'server') {
+      const http = result.installSnippets.find((s) => s.transport === 'http');
+      expect(http?.payload).toBe(
         'claude mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
       );
     }
   });
 
-  it('codex snippet matches `codex mcp add <name> --url <url>`', async () => {
+  it('codex remote snippet matches `codex mcp add <name> --url <url>`', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -214,13 +254,14 @@ describe('cyanheads_describe', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      expect(result.installSnippets[0]?.payload).toBe(
+      const http = result.installSnippets.find((s) => s.transport === 'http');
+      expect(http?.payload).toBe(
         'codex mcp add earthquake-mcp-server --url https://earthquake.caseyjhand.com/mcp',
       );
     }
   });
 
-  it('gemini snippet matches `gemini mcp add --transport http <name> <url>`', async () => {
+  it('gemini remote snippet matches `gemini mcp add --transport http <name> <url>`', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -229,13 +270,14 @@ describe('cyanheads_describe', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      expect(result.installSnippets[0]?.payload).toBe(
+      const http = result.installSnippets.find((s) => s.transport === 'http');
+      expect(http?.payload).toBe(
         'gemini mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
       );
     }
   });
 
-  it('cursor JSON omits the `type` field', async () => {
+  it('cursor remote JSON omits the `type` field', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -244,14 +286,15 @@ describe('cyanheads_describe', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      const parsed = JSON.parse(result.installSnippets[0]!.payload);
+      const http = result.installSnippets.find((s) => s.transport === 'http')!;
+      const parsed = JSON.parse(http.payload);
       expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
         url: 'https://earthquake.caseyjhand.com/mcp',
       });
     }
   });
 
-  it('streamable-http JSON carries `type: "http"`', async () => {
+  it('streamable-http remote JSON carries `type: "http"`', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({
       name: 'earthquake-mcp-server',
@@ -260,7 +303,8 @@ describe('cyanheads_describe', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
-      const parsed = JSON.parse(result.installSnippets[0]!.payload);
+      const http = result.installSnippets.find((s) => s.transport === 'http')!;
+      const parsed = JSON.parse(http.payload);
       expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
         type: 'http',
         url: 'https://earthquake.caseyjhand.com/mcp',
@@ -277,12 +321,29 @@ describe('cyanheads_describe', () => {
     });
     const { result } = await describeTool.handler(input, ctx);
     if (result.kind === 'server') {
+      // curl is HTTP-only — exactly one snippet.
+      expect(result.installSnippets).toHaveLength(1);
       const payload = result.installSnippets[0]!.payload;
       expect(payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
       expect(payload).toContain('Content-Type: application/json');
       expect(payload).toContain('MCP-Protocol-Version: 2025-11-25');
       expect(payload).toContain('"method":"initialize"');
       expect(payload).toContain('"protocolVersion":"2025-11-25"');
+    }
+  });
+
+  it('resolves a local-only server: endpoint absent, stdio-only snippets, env vars surfaced', async () => {
+    const ctx = createMockContext();
+    const input = describeTool.input.parse({ name: 'mailchimp-mcp-server', kind: 'server' });
+    const { result } = await describeTool.handler(input, ctx);
+
+    expect(result.kind).toBe('server');
+    if (result.kind === 'server') {
+      expect(result.endpoint).toBeUndefined();
+      expect(result.requiredEnvVars).toEqual(['MAILCHIMP_API_KEY']);
+      expect(result.installSnippets).toHaveLength(5);
+      expect(result.installSnippets.every((s) => s.transport === 'stdio')).toBe(true);
+      expect(result.installSnippets.some((s) => s.client === 'curl')).toBe(false);
     }
   });
 
@@ -322,23 +383,18 @@ describe('cyanheads_describe', () => {
     });
   });
 
-  it('returns one snippet per supported client when client is omitted', async () => {
+  it('returns local + remote snippets for every client when client is omitted', async () => {
     const ctx = createMockContext();
     const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
     const { result } = await describeTool.handler(input, ctx);
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
-      expect(result.installSnippets).toHaveLength(6);
-      const clients = result.installSnippets.map((s) => s.client).sort();
-      expect(clients).toEqual([
-        'claude-code',
-        'codex',
-        'curl',
-        'cursor',
-        'gemini',
-        'streamable-http',
-      ]);
+      expect(result.installSnippets).toHaveLength(11);
+      const stdio = result.installSnippets.filter((s) => s.transport === 'stdio');
+      const http = result.installSnippets.filter((s) => s.transport === 'http');
+      expect(stdio).toHaveLength(5);
+      expect(http).toHaveLength(6);
     }
   });
 
@@ -369,7 +425,7 @@ describe('cyanheads_describe', () => {
     expect(text).toContain('tool');
   });
 
-  it('renders server branch fields in format()', () => {
+  it('renders Local and Remote sections in format() for a hosted server', () => {
     const output = {
       result: {
         kind: 'server' as const,
@@ -384,7 +440,15 @@ describe('cyanheads_describe', () => {
         toolCount: 2,
         installSnippets: [
           {
-            client: 'claude-code',
+            client: 'claude-code' as const,
+            transport: 'stdio' as const,
+            label: 'Claude Code (CLI)',
+            payload:
+              'claude mcp add --transport stdio earthquake-mcp-server -- npx -y @cyanheads/earthquake-mcp-server',
+          },
+          {
+            client: 'claude-code' as const,
+            transport: 'http' as const,
             label: 'Claude Code (CLI)',
             payload:
               'claude mcp add --transport http earthquake-mcp-server https://earthquake.caseyjhand.com/mcp',
@@ -401,11 +465,39 @@ describe('cyanheads_describe', () => {
     expect(text).toContain('@cyanheads/earthquake-mcp-server');
     expect(text).toContain('https://github.com/cyanheads/earthquake-mcp-server');
     expect(text).toContain('none');
-    expect(text).toContain('2');
+    expect(text).toContain('## Local install (stdio)');
+    expect(text).toContain('--transport stdio');
+    expect(text).toContain('## Remote install (HTTP)');
     expect(text).toContain('earthquake.caseyjhand.com');
-    expect(text).toContain('claude-code');
-    expect(text).toContain('Claude Code (CLI)');
-    expect(text).toContain('claude mcp add');
-    expect(text).toContain('server');
+  });
+
+  it('renders the env-var note and no Remote section for a local-only server', () => {
+    const output = {
+      result: {
+        kind: 'server' as const,
+        name: 'mailchimp-mcp-server',
+        displayName: 'Mailchimp',
+        description: 'Manage Mailchimp audiences.',
+        version: '1.0.0',
+        npm: '@cyanheads/mailchimp-mcp-server',
+        github: 'https://github.com/cyanheads/mailchimp-mcp-server',
+        auth: 'none',
+        requiredEnvVars: ['MAILCHIMP_API_KEY'],
+        toolCount: 1,
+        installSnippets: [
+          {
+            client: 'cursor' as const,
+            transport: 'stdio' as const,
+            label: 'Cursor (mcp.json)',
+            payload: '{"mcpServers":{"mailchimp-mcp-server":{"command":"npx"}}}',
+          },
+        ],
+      },
+    };
+    const blocks = describeTool.format!(output);
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
+    expect(text).toContain('## Local install (stdio)');
+    expect(text).toContain('MAILCHIMP_API_KEY');
+    expect(text).not.toContain('## Remote install (HTTP)');
   });
 });
