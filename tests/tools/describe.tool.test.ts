@@ -148,6 +148,14 @@ describe('cyanheads_describe', () => {
       expect(result.endpoint).toBe('https://earthquake.caseyjhand.com/mcp');
       expect(result.auth).toBe('none');
       expect(result.toolCount).toBe(2);
+      expect(result.tools).toEqual([
+        {
+          name: 'earthquake_search',
+          description: 'Query seismic events by location and magnitude.',
+        },
+        { name: 'earthquake_get_feed', description: 'Fetch real-time USGS earthquake feed.' },
+      ]);
+      expect(result.toolCount).toBe(result.tools.length);
       // 5 local (stdio) + 6 remote (http)
       expect(result.installSnippets).toHaveLength(11);
     }
@@ -341,6 +349,9 @@ describe('cyanheads_describe', () => {
     if (result.kind === 'server') {
       expect(result.endpoint).toBeUndefined();
       expect(result.requiredEnvVars).toEqual(['MAILCHIMP_API_KEY']);
+      expect(result.tools).toEqual([
+        { name: 'mailchimp_list_audiences', description: 'List Mailchimp audiences.' },
+      ]);
       expect(result.installSnippets).toHaveLength(5);
       expect(result.installSnippets.every((s) => s.transport === 'stdio')).toBe(true);
       expect(result.installSnippets.some((s) => s.client === 'curl')).toBe(false);
@@ -438,6 +449,10 @@ describe('cyanheads_describe', () => {
         endpoint: 'https://earthquake.caseyjhand.com/mcp',
         auth: 'none',
         toolCount: 2,
+        tools: [
+          { name: 'earthquake_search', description: 'Query seismic events by location.' },
+          { name: 'earthquake_get_feed', description: 'Fetch real-time USGS earthquake feed.' },
+        ],
         installSnippets: [
           {
             client: 'claude-code' as const,
@@ -465,6 +480,9 @@ describe('cyanheads_describe', () => {
     expect(text).toContain('@cyanheads/earthquake-mcp-server');
     expect(text).toContain('https://github.com/cyanheads/earthquake-mcp-server');
     expect(text).toContain('none');
+    expect(text).toContain('## Tools');
+    expect(text).toContain('earthquake_search');
+    expect(text).toContain('Query seismic events by location.');
     expect(text).toContain('## Local install (stdio)');
     expect(text).toContain('--transport stdio');
     expect(text).toContain('## Remote install (HTTP)');
@@ -484,6 +502,7 @@ describe('cyanheads_describe', () => {
         auth: 'none',
         requiredEnvVars: ['MAILCHIMP_API_KEY'],
         toolCount: 1,
+        tools: [{ name: 'mailchimp_list_audiences', description: 'List Mailchimp audiences.' }],
         installSnippets: [
           {
             client: 'cursor' as const,
@@ -496,6 +515,8 @@ describe('cyanheads_describe', () => {
     };
     const blocks = describeTool.format!(output);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
+    expect(text).toContain('## Tools');
+    expect(text).toContain('mailchimp_list_audiences');
     expect(text).toContain('## Local install (stdio)');
     expect(text).toContain('MAILCHIMP_API_KEY');
     expect(text).not.toContain('## Remote install (HTTP)');

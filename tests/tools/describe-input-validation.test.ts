@@ -376,6 +376,10 @@ describe('cyanheads_describe — security', () => {
         endpoint: 'https://earthquake.caseyjhand.com/mcp',
         auth: 'none',
         toolCount: 2,
+        tools: [
+          { name: 'earthquake_search', description: 'Query seismic events by location.' },
+          { name: 'earthquake_get_feed', description: 'Fetch real-time USGS earthquake feed.' },
+        ],
         installSnippets: [],
       },
     };

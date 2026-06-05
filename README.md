@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -53,7 +53,7 @@ Semantic search across the fleet. Embeds the query with [Snowflake Arctic Embed 
 Resolve a name to its install instructions. Accepts either a tool name (snake_case, e.g. `earthquake_search`) or a server name (kebab-case, e.g. `earthquake-mcp-server`) — auto-detected from the format, or pinned via the `kind` parameter.
 
 - For tools: returns the description and the owning server name
-- For servers: returns description, version, npm package, GitHub URL, tool count, and per-client install snippets — **local (stdio, via `npx`) for every server, plus remote (Streamable HTTP) when a hosted endpoint exists**
+- For servers: returns description, version, npm package, GitHub URL, the full tool list (each tool's name and description), and per-client install snippets — **local (stdio, via `npx`) for every server, plus remote (Streamable HTTP) when a hosted endpoint exists**
 - Each snippet carries a `transport` (`stdio` or `http`); env vars a local install needs are surfaced and scaffolded into the JSON configs
 - `client` filter narrows snippets to one of `claude-code`, `codex`, `cursor`, `gemini`, `streamable-http`, `curl`; omit to return every client
 - Discriminated output on `kind` — callers branch on data, not string parsing

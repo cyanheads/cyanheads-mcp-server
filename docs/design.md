@@ -7,7 +7,7 @@
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
 | `cyanheads_search` | Semantic search across fleet tools and servers. Returns ranked matches with brief summaries and the server each tool belongs to. | `query`, `scope`, `category`, `limit` | `readOnlyHint: true`, `openWorldHint: false` |
-| `cyanheads_describe` | Description, connection URL, and per-client install snippets for a named tool or server. | `name`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
+| `cyanheads_describe` | Description, tool list, connection URL, and per-client install snippets for a named tool or server. | `name`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
 | `cyanheads_invoke` *(Phase 2)* | Passthrough dispatch to a fleet backend. Deferred. | — | — |
 
 ### Resources
@@ -291,7 +291,7 @@ errors: [
 
 ### `cyanheads_describe`
 
-**Description:** Return the description, connection URL, and per-client install snippets for a named tool or server. For tools: the description and the server it belongs to. For servers: connection URL and install snippets for every supported client (or one specific client when `client` is specified). Call `cyanheads_search` first to find valid names.
+**Description:** Return the description, connection URL, and per-client install snippets for a named tool or server. For tools: the description and the server it belongs to. For servers: the full tool list (each tool's name and description), connection URL, and install snippets for every supported client (or one specific client when `client` is specified). Call `cyanheads_search` first to find valid names.
 
 **Input schema:**
 

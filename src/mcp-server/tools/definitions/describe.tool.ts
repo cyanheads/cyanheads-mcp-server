@@ -86,6 +86,19 @@ export const describeTool = tool('cyanheads_describe', {
                 'Env var names the local (stdio) install requires (e.g. ["MAILCHIMP_API_KEY"]). Absent when none.',
               ),
             toolCount: z.number().describe('Number of tools exposed by this server.'),
+            tools: z
+              .array(
+                z
+                  .object({
+                    name: z.string().describe('Tool name (snake_case, e.g. "earthquake_search").'),
+                    description: z.string().describe('Brief description of what the tool does.'),
+                  })
+                  .describe('A single tool exposed by this server.'),
+              )
+              .describe(
+                'Every tool this server exposes, each with its name and a brief description — ' +
+                  'one describe call reveals the full surface without a second lookup.',
+              ),
             installSnippets: z
               .array(
                 z
@@ -200,6 +213,7 @@ export const describeTool = tool('cyanheads_describe', {
             ? { requiredEnvVars: serverEntry.requiredEnvVars }
             : {}),
           toolCount: serverEntry.tools.length,
+          tools: serverEntry.tools.map((t) => ({ name: t.name, description: t.description })),
           installSnippets: snippets,
         },
       };
@@ -235,6 +249,14 @@ export const describeTool = tool('cyanheads_describe', {
       lines.push('## Description');
       lines.push(result.description);
       lines.push('');
+
+      if (result.tools.length > 0) {
+        lines.push('## Tools');
+        for (const t of result.tools) {
+          lines.push(`- \`${t.name}\` — ${t.description}`);
+        }
+        lines.push('');
+      }
 
       const local = result.installSnippets.filter((s) => s.transport === 'stdio');
       const remote = result.installSnippets.filter((s) => s.transport === 'http');
