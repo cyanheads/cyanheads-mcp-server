@@ -1,9 +1,11 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-06-02 13:57:24
+Generated on: 2026-06-12 03:44:18
 
 ```text
 cyanheads-mcp-server/
+├── .agents/
+├── .claude/
 ├── .github/
 │   └── ISSUE_TEMPLATE/
 │       ├── bug_report.yml
@@ -27,6 +29,7 @@ cyanheads-mcp-server/
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
+│   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
@@ -112,6 +115,10 @@ cyanheads-mcp-server/
 │   ├── security-pass/
 │   │   └── SKILL.md
 │   ├── setup/
+│   │   └── SKILL.md
+│   ├── techniques/
+│   │   ├── references/
+│   │   │   └── outline-on-overflow.md
 │   │   └── SKILL.md
 │   └── tool-defs-analysis/
 │       └── SKILL.md

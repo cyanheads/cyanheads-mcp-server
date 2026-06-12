@@ -12,6 +12,7 @@ import { getCatalogService, initCatalogService } from './services/catalog/catalo
 
 await createApp({
   name: 'cyanheads-mcp-server',
+  title: 'cyanheads-mcp-server',
   tools: [searchTool, describeTool],
   resources: [],
   prompts: [],

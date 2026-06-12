@@ -140,7 +140,7 @@ export const describeTool = tool('cyanheads_describe', {
     },
     {
       reason: 'ambiguous_kind',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'Name matches both a tool and a server (collision in catalog).',
       recovery: 'Set the kind parameter to "tool" or "server" to disambiguate.',
     },
