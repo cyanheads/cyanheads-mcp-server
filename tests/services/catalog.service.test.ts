@@ -360,6 +360,39 @@ describe('CatalogService', () => {
       expect(service.getTool('nonexistent_tool')).toBeNull();
     });
 
+    it('falls back to the self record for this server, absent from the remote payload', () => {
+      expect(MINIMAL_PAYLOAD.servers.some((s) => s.name === 'cyanheads-mcp-server')).toBe(false);
+
+      const record = service.getServer('cyanheads-mcp-server');
+      expect(record).not.toBeNull();
+      expect(record!.npm).toBe('@cyanheads/cyanheads-mcp-server');
+      expect(record!.endpoint).toBe('https://cyanheads.caseyjhand.com/mcp');
+      expect(record!.tools.map((t) => t.name)).toEqual([
+        'cyanheads_search_catalog',
+        'cyanheads_describe_entry',
+      ]);
+    });
+
+    it('falls back to the self record for this server’s own tools', () => {
+      for (const name of ['cyanheads_search_catalog', 'cyanheads_describe_entry']) {
+        const tool = service.getTool(name);
+        expect(tool).not.toBeNull();
+        expect(tool!.name).toBe(name);
+        expect(tool!.serverRecord.name).toBe('cyanheads-mcp-server');
+      }
+    });
+
+    it('keeps the self record out of search, stats, and the vector index', async () => {
+      expect(service.stats().serverCount).toBe(MINIMAL_PAYLOAD.servers.length);
+      expect(service.stats().toolCount).toBe(3);
+
+      // Every scope, every category — the static record is never a search candidate.
+      for (const scope of ['tools', 'servers'] as const) {
+        const results = await service.search({ query: 'anything at all', scope });
+        expect(results.some((r) => r.name.startsWith('cyanheads'))).toBe(false);
+      }
+    });
+
     it('listCategories returns sorted unique categories', () => {
       const cats = service.listCategories();
       expect(cats).toContain('public-data');
@@ -367,6 +400,88 @@ describe('CatalogService', () => {
       for (let i = 1; i < cats.length; i++) {
         expect(cats[i].localeCompare(cats[i - 1])).toBeGreaterThanOrEqual(0);
       }
+    });
+  });
+
+  describe('self-record precedence', () => {
+    /**
+     * The remote catalog is generated outside this repo and currently omits this
+     * server. Should the generator start emitting it, the remote entry must take
+     * precedence — the fallback then becomes unreachable rather than shadowing
+     * or duplicating the real record.
+     */
+    const PAYLOAD_WITH_SELF: FleetPayload = {
+      ...MINIMAL_PAYLOAD,
+      servers: [
+        ...MINIMAL_PAYLOAD.servers,
+        {
+          name: 'cyanheads-mcp-server',
+          displayName: 'Cyanheads Discovery',
+          description: 'Remote-catalog description.',
+          category: 'utility',
+          endpoint: 'https://remote.example.com/mcp',
+          npm: '@cyanheads/cyanheads-mcp-server',
+          github: 'https://github.com/cyanheads/cyanheads-mcp-server',
+          version: '99.0.0',
+          auth: 'none',
+          embedding: E1,
+          tools: [
+            {
+              name: 'cyanheads_search_catalog',
+              description: 'Remote-catalog tool description.',
+              embedding: E1,
+            },
+          ],
+        },
+      ],
+    };
+
+    it('prefers a remote server entry over the fallback', async () => {
+      mockFetchOk(PAYLOAD_WITH_SELF);
+      await service.initialize();
+
+      const record = service.getServer('cyanheads-mcp-server');
+      expect(record!.displayName).toBe('Cyanheads Discovery');
+      expect(record!.version).toBe('99.0.0');
+      expect(record!.endpoint).toBe('https://remote.example.com/mcp');
+      expect(service.stats().serverCount).toBe(3);
+    });
+
+    it('prefers a remote tool entry over the fallback', async () => {
+      mockFetchOk(PAYLOAD_WITH_SELF);
+      await service.initialize();
+
+      const tool = service.getTool('cyanheads_search_catalog');
+      expect(tool!.description).toBe('Remote-catalog tool description.');
+      expect(tool!.serverRecord.version).toBe('99.0.0');
+    });
+
+    it('still falls back for a tool the remote entry omits', async () => {
+      mockFetchOk(PAYLOAD_WITH_SELF);
+      await service.initialize();
+
+      const tool = service.getTool('cyanheads_describe_entry');
+      expect(tool).not.toBeNull();
+      expect(tool!.serverRecord.version).not.toBe('99.0.0');
+    });
+
+    it('re-resolves precedence after a background refresh adds the remote entry', async () => {
+      vi.useFakeTimers();
+      service.shutdown();
+      service = new CatalogService(
+        { ...TEST_CONFIG, catalogRefreshSeconds: 1 },
+        makeMockEmbeddings({}),
+      );
+
+      mockFetchOk(MINIMAL_PAYLOAD);
+      await service.initialize();
+      expect(service.getServer('cyanheads-mcp-server')!.version).not.toBe('99.0.0');
+
+      mockFetchOk({ ...PAYLOAD_WITH_SELF, generatedAt: '2026-05-29T00:00:00Z' });
+      await vi.advanceTimersByTimeAsync(1100);
+
+      expect(service.getServer('cyanheads-mcp-server')!.version).toBe('99.0.0');
+      vi.useRealTimers();
     });
   });
 

@@ -1,18 +1,18 @@
 /**
- * @fileoverview Input validation, edge-case, and security tests for cyanheads_describe.
+ * @fileoverview Input validation, edge-case, and security tests for cyanheads_describe_entry.
  * Mocks fetch and injects a deterministic embeddings runtime — no live network.
- * @module tests/tools/describe-input-validation.test
+ * @module tests/tools/describe-entry-input-validation.test
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { describeTool } from '@/mcp-server/tools/definitions/describe.tool.js';
+import { describeEntryTool } from '@/mcp-server/tools/definitions/describe-entry.tool.js';
+import { initCatalogService } from '@/services/catalog/catalog-service.js';
+import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
 import {
   getCatalogService,
-  initCatalogService,
   resetCatalogServiceForTests,
-} from '@/services/catalog/catalog-service.js';
-import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
+} from '@/services/catalog/service-instance.js';
 import type { FleetPayload } from '@/services/catalog/types.js';
 
 const TEST_MODEL = 'test/mock-embed-v1';
@@ -106,22 +106,52 @@ function makeMockEmbeddings(): IEmbeddingsRuntime {
   };
 }
 
-describe('cyanheads_describe — input validation', () => {
+describe('cyanheads_describe_entry — input validation', () => {
   it('rejects empty name (min 1)', () => {
-    expect(() => describeTool.input.parse({ name: '' })).toThrow();
+    expect(() => describeEntryTool.input.parse({ name: '' })).toThrow();
   });
 
   it('rejects missing name', () => {
-    expect(() => describeTool.input.parse({})).toThrow();
+    expect(() => describeEntryTool.input.parse({})).toThrow();
+  });
+
+  it('accepts a name at the maximum boundary (64 chars)', () => {
+    expect(() => describeEntryTool.input.parse({ name: 'a'.repeat(64) })).not.toThrow();
+  });
+
+  it('rejects a name one character over the maximum (65 chars)', () => {
+    expect(() => describeEntryTool.input.parse({ name: 'a'.repeat(65) })).toThrow();
+  });
+
+  it('rejects a megabyte-scale name', () => {
+    expect(() => describeEntryTool.input.parse({ name: 'x'.repeat(1_000_000) })).toThrow();
+  });
+
+  it('accepts the longest identifiers the live fleet actually uses', () => {
+    // Longest catalog tool name (42 chars) and server name (32 chars) as of the
+    // measurement this bound was set from, plus this server's own tool names.
+    const realNames = [
+      'courtlistener_search_financial_disclosures',
+      'openstates_get_legislators_by_location',
+      'faa-aircraft-registry-mcp-server',
+      'nhtsa-vehicle-safety-mcp-server',
+      'cyanheads-mcp-server',
+      'cyanheads_search_catalog',
+      'cyanheads_describe_entry',
+    ];
+    for (const name of realNames) {
+      expect(name.length).toBeLessThanOrEqual(64);
+      expect(() => describeEntryTool.input.parse({ name })).not.toThrow();
+    }
   });
 
   it('rejects an unknown kind value', () => {
-    expect(() => describeTool.input.parse({ name: 'test-server', kind: 'unknown' })).toThrow();
+    expect(() => describeEntryTool.input.parse({ name: 'test-server', kind: 'unknown' })).toThrow();
   });
 
   it('rejects an unknown client value', () => {
     expect(() =>
-      describeTool.input.parse({ name: 'test-server', client: 'unknown-client' }),
+      describeEntryTool.input.parse({ name: 'test-server', client: 'unknown-client' }),
     ).toThrow();
   });
 
@@ -134,20 +164,22 @@ describe('cyanheads_describe — input validation', () => {
       'gemini',
       'streamable-http',
     ] as const) {
-      expect(() => describeTool.input.parse({ name: 'test-server', client })).not.toThrow();
+      expect(() => describeEntryTool.input.parse({ name: 'test-server', client })).not.toThrow();
     }
   });
 
   it('accepts kind "tool"', () => {
-    expect(() => describeTool.input.parse({ name: 'test_tool', kind: 'tool' })).not.toThrow();
+    expect(() => describeEntryTool.input.parse({ name: 'test_tool', kind: 'tool' })).not.toThrow();
   });
 
   it('accepts kind "server"', () => {
-    expect(() => describeTool.input.parse({ name: 'test-server', kind: 'server' })).not.toThrow();
+    expect(() =>
+      describeEntryTool.input.parse({ name: 'test-server', kind: 'server' }),
+    ).not.toThrow();
   });
 });
 
-describe('cyanheads_describe — handler behavior', () => {
+describe('cyanheads_describe_entry — handler behavior', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -169,8 +201,8 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('returns toolCount matching the fixture tool count', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
       expect(result.toolCount).toBe(2);
@@ -179,8 +211,8 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('tool result does not include installSnippets field', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
     // discriminatedUnion: 'tool' branch has no installSnippets
     expect((result as Record<string, unknown>).installSnippets).toBeUndefined();
@@ -188,8 +220,8 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('server result does not include a tool-only server field', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
     // discriminatedUnion: 'server' branch has no 'server' field (that is on 'tool')
     expect((result as Record<string, unknown>).server).toBeUndefined();
@@ -197,8 +229,8 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('resolves second server in fixture', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'arxiv-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'arxiv-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
       expect(result.name).toBe('arxiv-mcp-server');
@@ -208,8 +240,8 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('resolves a tool from the second server', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'arxiv_search', kind: 'tool' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'arxiv_search', kind: 'tool' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
     if (result.kind === 'tool') {
       expect(result.server).toBe('arxiv-mcp-server');
@@ -218,12 +250,12 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('filtering by client returns that client across local and remote transports', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'arxiv-mcp-server',
       kind: 'server',
       client: 'cursor',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       expect(result.installSnippets).toHaveLength(2);
       expect(result.installSnippets.every((s) => s.client === 'cursor')).toBe(true);
@@ -233,12 +265,12 @@ describe('cyanheads_describe — handler behavior', () => {
 
   it('http snippet reflects the actual endpoint from the catalog', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'arxiv-mcp-server',
       kind: 'server',
       client: 'claude-code',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const http = result.installSnippets.find((s) => s.transport === 'http');
       expect(http?.payload).toContain('arxiv.caseyjhand.com');
@@ -246,7 +278,7 @@ describe('cyanheads_describe — handler behavior', () => {
   });
 });
 
-describe('cyanheads_describe — edge cases', () => {
+describe('cyanheads_describe_entry — edge cases', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -269,53 +301,53 @@ describe('cyanheads_describe — edge cases', () => {
   it('auto-detects server kind for a name with hyphens and no underscores', async () => {
     const ctx = createMockContext();
     // No explicit kind — hyphens → server
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
   });
 
   it('auto-detects tool kind for a name with underscores and no hyphens', async () => {
     const ctx = createMockContext();
     // No explicit kind — underscores → tool
-    const input = describeTool.input.parse({ name: 'arxiv_search' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'arxiv_search' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
   });
 
   it('returns not_found for a name with no hyphens or underscores', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'plainname' });
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'plainname' });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('throws not_found for a known server name when kind="tool"', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'tool' });
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'tool' });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('throws not_found for a known tool name when kind="server"', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'earthquake_search', kind: 'server' });
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'server' });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('unicode name that does not match catalog returns not_found', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: '地震_search' });
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: '地震_search' });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 });
 
-describe('cyanheads_describe — security', () => {
+describe('cyanheads_describe_entry — security', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -337,8 +369,8 @@ describe('cyanheads_describe — security', () => {
 
   it('output contains no env var names from server config', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('CATALOG_URL');
     expect(serialized).not.toContain('EMBEDDING_MODEL_ID');
@@ -346,19 +378,21 @@ describe('cyanheads_describe — security', () => {
   });
 
   it('error for not_found does not leak internal catalog path or config', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'nonexistent-server', kind: 'server' });
-    const err = await describeTool.handler(input, ctx).catch((e: unknown) => e);
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'nonexistent-server', kind: 'server' });
+    const err = await describeEntryTool.handler(input, ctx).catch((e: unknown) => e);
     const msg = String(err instanceof Error ? err.message : err);
     expect(msg).not.toContain('CATALOG_URL');
     expect(msg).not.toContain('test.example.com');
   });
 
   it('injection string in name field does not cause unhandled throw', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     // Has hyphens so auto-detects as server; not in catalog → not_found
-    const input = describeTool.input.parse({ name: "'; DROP TABLE servers; --injection-server" });
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    const input = describeEntryTool.input.parse({
+      name: "'; DROP TABLE servers; --injection-server",
+    });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
@@ -383,7 +417,7 @@ describe('cyanheads_describe — security', () => {
         installSnippets: [],
       },
     };
-    const blocks = describeTool.format!(output);
+    const blocks = describeEntryTool.format!(output);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).not.toContain('CATALOG_URL');
     expect(text).not.toContain('API_KEY');

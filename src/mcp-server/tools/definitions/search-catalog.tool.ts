@@ -1,30 +1,40 @@
 /**
- * @fileoverview cyanheads_search — semantic search across fleet tools and servers.
+ * @fileoverview cyanheads_search_catalog — semantic search across fleet tools and servers.
  * Embeds the query at runtime and dot-products against in-memory L2-normalized
  * document vectors loaded from fleet.json.
- * @module mcp-server/tools/definitions/search
+ * @module mcp-server/tools/definitions/search-catalog
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getCatalogService } from '@/services/catalog/catalog-service.js';
+import { getCatalogService } from '@/services/catalog/service-instance.js';
 
-export const searchTool = tool('cyanheads_search', {
+/**
+ * Upper bound on the query string. A natural-language capability description
+ * runs one to a few sentences; 500 characters covers a generously long
+ * multi-sentence query while keeping oversized input away from the embedding
+ * model, which is the most expensive step in the request path.
+ */
+const QUERY_MAX_LENGTH = 500;
+
+export const searchCatalogTool = tool('cyanheads_search_catalog', {
   title: 'Search Fleet Tools and Servers',
   description:
     'Search fleet tools and servers by natural-language description. Returns ranked matches with ' +
     'brief summaries and the server each tool belongs to. Use scope "servers" to find which ' +
     'server handles a workflow; use the default scope "tools" to find specific tools. ' +
-    'Call cyanheads_describe on a result name to get install snippets and the connection URL.',
+    'Call cyanheads_describe_entry on a result name to get install snippets and the connection URL.',
   annotations: { readOnlyHint: true, openWorldHint: false },
-  auth: ['tool:cyanheads_search:read'],
+  auth: ['tool:cyanheads_search_catalog:read'],
 
   input: z.object({
     query: z
       .string()
       .min(1)
+      .max(QUERY_MAX_LENGTH)
       .describe(
-        'Natural language search query. Describe what you want to accomplish, a workflow, or a capability area.',
+        'Natural language search query. Describe what you want to accomplish, a workflow, or a ' +
+          `capability area. 1-${QUERY_MAX_LENGTH} characters.`,
       ),
     scope: z
       .enum(['tools', 'servers'])

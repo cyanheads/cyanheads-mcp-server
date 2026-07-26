@@ -152,6 +152,9 @@ export interface ICatalogService {
     limit?: number;
   }): Promise<CatalogSearchResult[]>;
 
+  /** Stop the background refresh timer. */
+  shutdown(): void;
+
   /** Catalog summary for diagnostics. */
   stats(): {
     toolCount: number;

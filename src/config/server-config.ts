@@ -55,7 +55,7 @@ const ServerConfigSchema = z.object({
     ),
 
   /**
-   * Minimum cosine similarity for a result to surface in cyanheads_search output.
+   * Minimum cosine similarity for a result to surface in cyanheads_search_catalog output.
    * Tunable post-launch based on observed query patterns.
    */
   similarityFloor: z.coerce

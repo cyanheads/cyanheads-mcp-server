@@ -1,19 +1,19 @@
 /**
- * @fileoverview Tests for the cyanheads_search tool.
+ * @fileoverview Tests for the cyanheads_search_catalog tool.
  * Mocks globalThis.fetch and injects a deterministic embeddings runtime — no
  * live network or model loading.
- * @module tests/tools/search.tool.test
+ * @module tests/tools/search-catalog.tool.test
  */
 
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { searchTool } from '@/mcp-server/tools/definitions/search.tool.js';
+import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
+import { initCatalogService } from '@/services/catalog/catalog-service.js';
+import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
 import {
   getCatalogService,
-  initCatalogService,
   resetCatalogServiceForTests,
-} from '@/services/catalog/catalog-service.js';
-import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
+} from '@/services/catalog/service-instance.js';
 import type { FleetPayload } from '@/services/catalog/types.js';
 
 const TEST_MODEL = 'test/mock-embed-v1';
@@ -122,7 +122,7 @@ function makeMockEmbeddings(vectors: Record<string, number[]>): IEmbeddingsRunti
   };
 }
 
-describe('cyanheads_search', () => {
+describe('cyanheads_search_catalog', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -151,12 +151,12 @@ describe('cyanheads_search', () => {
 
   it('returns ranked tool matches for a query', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: 'seismic earthquake activity',
       scope: 'tools',
       limit: 5,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.scope).toBe('tools');
     expect(result.results.length).toBeGreaterThan(0);
@@ -177,12 +177,12 @@ describe('cyanheads_search', () => {
 
   it('returns server-scope matches', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: 'arxiv research papers',
       scope: 'servers',
       limit: 3,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.scope).toBe('servers');
     expect(result.results.length).toBeGreaterThan(0);
@@ -193,12 +193,12 @@ describe('cyanheads_search', () => {
   });
 
   it('respects the limit parameter and surfaces total in enrichment', async () => {
-    const ctx = createMockContext({ errors: searchTool.errors });
-    const input = searchTool.input.parse({
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
+    const input = searchCatalogTool.input.parse({
       query: 'seismic earthquake activity',
       limit: 1,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.results.length).toBeLessThanOrEqual(1);
 
@@ -207,14 +207,14 @@ describe('cyanheads_search', () => {
   });
 
   it('filters by category', async () => {
-    const ctx = createMockContext({ errors: searchTool.errors });
-    const input = searchTool.input.parse({
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
+    const input = searchCatalogTool.input.parse({
       query: 'arxiv research papers',
       scope: 'servers',
       category: 'research',
       limit: 10,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.results.length).toBeGreaterThan(0);
     for (const r of result.results) {
@@ -223,12 +223,12 @@ describe('cyanheads_search', () => {
   });
 
   it('returns structured empty when every score is below the floor', async () => {
-    const ctx = createMockContext({ errors: searchTool.errors });
-    const input = searchTool.input.parse({
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
+    const input = searchCatalogTool.input.parse({
       query: 'totally unrelated capability',
     });
 
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.results).toEqual([]);
     expect(result.scope).toBe('tools');
@@ -243,12 +243,12 @@ describe('cyanheads_search', () => {
 
   it('includes servers roll-up in tools-scope results', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: 'broad seismic and research query',
       scope: 'tools',
       limit: 1,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     // Results respect the limit
     expect(result.results.length).toBeLessThanOrEqual(1);
@@ -276,12 +276,12 @@ describe('cyanheads_search', () => {
 
   it('omits servers roll-up in servers scope', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: 'arxiv research papers',
       scope: 'servers',
       limit: 5,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.scope).toBe('servers');
     expect(result.servers).toBeUndefined();
@@ -291,12 +291,12 @@ describe('cyanheads_search', () => {
   it('servers roll-up is capped at 10', async () => {
     // With 3 servers in the fixture, cap is not exercised — verify it never exceeds 10
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: 'both research and seismic',
       scope: 'tools',
       limit: 5,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     if (result.servers) {
       expect(result.servers.length).toBeLessThanOrEqual(10);
@@ -306,22 +306,22 @@ describe('cyanheads_search', () => {
 
   it('throws catalog_empty when the catalog has not been initialized', async () => {
     resetCatalogServiceForTests();
-    const ctx = createMockContext({ errors: searchTool.errors });
-    const input = searchTool.input.parse({ query: 'anything', limit: 5 });
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
+    const input = searchCatalogTool.input.parse({ query: 'anything', limit: 5 });
 
-    await expect(searchTool.handler(input, ctx)).rejects.toMatchObject({
+    await expect(searchCatalogTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'catalog_empty' },
     });
   });
 
   it('ranks multiple matches in descending score order', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: 'both research and seismic',
       scope: 'servers',
       limit: 10,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
 
     expect(result.results.length).toBeGreaterThan(1);
     for (let i = 1; i < result.results.length; i++) {
@@ -354,7 +354,7 @@ describe('cyanheads_search', () => {
       ],
       serversTotal: 2,
     };
-    const blocks = searchTool.format!(result);
+    const blocks = searchCatalogTool.format!(result);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).toContain('earthquake_search');
     expect(text).toContain('earthquake-mcp-server');
@@ -373,7 +373,7 @@ describe('cyanheads_search', () => {
       results: [],
       scope: 'tools' as const,
     };
-    const blocks = searchTool.format!(result);
+    const blocks = searchCatalogTool.format!(result);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).toContain('No results matched.');
     expect(text).toContain('tools');
@@ -394,7 +394,7 @@ describe('cyanheads_search', () => {
       ],
       serversTotal: 15,
     };
-    const blocks = searchTool.format!(result);
+    const blocks = searchCatalogTool.format!(result);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).toContain('showing 1 of 15');
   });

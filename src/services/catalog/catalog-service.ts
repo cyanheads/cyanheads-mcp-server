@@ -12,6 +12,8 @@ import { logger } from '@cyanheads/mcp-ts-core/utils';
 import type { ServerConfig } from '@/config/server-config.js';
 import { type IEmbeddingsRuntime, TransformersEmbeddingsRuntime } from './embeddings-runtime.js';
 import { RemoteJsonCatalogProvider } from './remote-catalog-provider.js';
+import { getSelfCatalogRecord, getSelfCatalogTool, SELF_RECORD_NAME } from './self-record.js';
+import { setCatalogService } from './service-instance.js';
 import type {
   CatalogCategory,
   CatalogRecord,
@@ -154,14 +156,26 @@ export class CatalogService implements ICatalogService {
     return params.limit != null ? results.slice(0, params.limit) : results;
   }
 
+  /**
+   * The remote catalog is generated outside this repo and does not include the
+   * discovery front door itself, so both exact-name lookups fall back to the
+   * server-local self record. The remote index is always consulted first: if the
+   * generator ever starts emitting a real `cyanheads-mcp-server` entry, that
+   * entry wins on every request and the fallback becomes unreachable — no
+   * duplication, no stale local metadata masking the real record. The static
+   * record also survives `_maybeRefresh()`'s atomic index swap by construction,
+   * since it is never part of `this._index`.
+   */
   getTool(name: string): (CatalogTool & { serverRecord: CatalogRecord }) | null {
     const index = this._assertInitialized();
-    return index.toolByName.get(name) ?? null;
+    return index.toolByName.get(name) ?? getSelfCatalogTool(name);
   }
 
   getServer(name: string): CatalogRecord | null {
     const index = this._assertInitialized();
-    return index.serverByName.get(name) ?? null;
+    return (
+      index.serverByName.get(name) ?? (name === SELF_RECORD_NAME ? getSelfCatalogRecord() : null)
+    );
   }
 
   listCategories(): CatalogCategory[] {
@@ -320,30 +334,16 @@ function dotRow(query: Float32Array, store: Float32Array, rowIdx: number, dims: 
 }
 
 // ---------------------------------------------------------------------------
-// Init / accessor
+// Init
 // ---------------------------------------------------------------------------
 
-let _service: CatalogService | undefined;
-
+/**
+ * Construct the service and install it as the process-wide instance. The
+ * accessor itself lives in `service-instance.ts` — see that module for why.
+ */
 export function initCatalogService(
   config: CatalogServiceConfig,
   embeddings?: IEmbeddingsRuntime,
 ): void {
-  _service = new CatalogService(config, embeddings);
-}
-
-export function getCatalogService(): CatalogService {
-  if (!_service) {
-    throw serviceUnavailable(
-      'CatalogService not initialized — call initCatalogService() in setup()',
-      { reason: 'catalog_empty' },
-    );
-  }
-  return _service;
-}
-
-/** Test-only reset. */
-export function resetCatalogServiceForTests(): void {
-  _service?.shutdown();
-  _service = undefined;
+  setCatalogService(new CatalogService(config, embeddings));
 }

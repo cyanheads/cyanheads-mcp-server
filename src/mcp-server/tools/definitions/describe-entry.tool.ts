@@ -1,34 +1,44 @@
 /**
- * @fileoverview cyanheads_describe — return connection URL and per-client install snippets
+ * @fileoverview cyanheads_describe_entry — return connection URL and per-client install snippets
  * for a named tool or server.
  * Uses z.discriminatedUnion on 'kind' so the linter walks each branch independently
  * and format() can dispatch cleanly.
- * @module mcp-server/tools/definitions/describe
+ * @module mcp-server/tools/definitions/describe-entry
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getCatalogService } from '@/services/catalog/catalog-service.js';
+import { getCatalogService } from '@/services/catalog/service-instance.js';
 import { buildAllSnippets } from '@/services/catalog/snippets.js';
 
-export const describeTool = tool('cyanheads_describe', {
+/**
+ * Upper bound on the entry name. Fleet identifiers are bounded in practice —
+ * the longest catalog tool name is 42 characters and the longest server name is
+ * 32 — so 64 leaves ample headroom for fleet growth while keeping the field
+ * from being effectively unbounded.
+ */
+const NAME_MAX_LENGTH = 64;
+
+export const describeEntryTool = tool('cyanheads_describe_entry', {
   title: 'Describe Fleet Tool or Server',
   description:
     'Return the description and install snippets for a named tool or server. For tools: the ' +
     'description and the server it belongs to. For servers: local (stdio, via npx) install ' +
     'snippets for every published server, plus remote (HTTP) connection snippets when a hosted ' +
     'endpoint exists — for every supported client, or one client via the client parameter. ' +
-    'Call cyanheads_search first to find valid names.',
+    'Call cyanheads_search_catalog first to find valid names.',
   annotations: { readOnlyHint: true, openWorldHint: false },
-  auth: ['tool:cyanheads_describe:read'],
+  auth: ['tool:cyanheads_describe_entry:read'],
 
   input: z.object({
     name: z
       .string()
       .min(1)
+      .max(NAME_MAX_LENGTH)
       .describe(
         'Tool name (snake_case, e.g. "earthquake_search") or server name ' +
-          '(kebab-case, e.g. "earthquake-mcp-server"). Use cyanheads_search to discover valid names.',
+          '(kebab-case, e.g. "earthquake-mcp-server"). 1-' +
+          `${NAME_MAX_LENGTH} characters. Use cyanheads_search_catalog to discover valid names.`,
       ),
     kind: z
       .enum(['tool', 'server'])
@@ -136,7 +146,7 @@ export const describeTool = tool('cyanheads_describe', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No tool or server with the given name exists in the catalog.',
       recovery:
-        'Use cyanheads_search to find the correct name, then call cyanheads_describe again.',
+        'Use cyanheads_search_catalog to find the correct name, then call cyanheads_describe_entry again.',
     },
     {
       reason: 'ambiguous_kind',

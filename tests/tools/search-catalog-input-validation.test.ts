@@ -1,18 +1,18 @@
 /**
- * @fileoverview Input validation, edge-case, and security tests for cyanheads_search.
+ * @fileoverview Input validation, edge-case, and security tests for cyanheads_search_catalog.
  * Mocks fetch and injects a deterministic embeddings runtime — no live network.
- * @module tests/tools/search-input-validation.test
+ * @module tests/tools/search-catalog-input-validation.test
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { searchTool } from '@/mcp-server/tools/definitions/search.tool.js';
+import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
+import { initCatalogService } from '@/services/catalog/catalog-service.js';
+import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
 import {
   getCatalogService,
-  initCatalogService,
   resetCatalogServiceForTests,
-} from '@/services/catalog/catalog-service.js';
-import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
+} from '@/services/catalog/service-instance.js';
 import type { FleetPayload } from '@/services/catalog/types.js';
 
 const TEST_MODEL = 'test/mock-embed-v1';
@@ -86,7 +86,7 @@ function makeIdentityEmbeddings(): IEmbeddingsRuntime {
   };
 }
 
-describe('cyanheads_search — input validation', () => {
+describe('cyanheads_search_catalog — input validation', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -108,76 +108,105 @@ describe('cyanheads_search — input validation', () => {
 
   describe('query field', () => {
     it('rejects empty string query (min 1)', () => {
-      expect(() => searchTool.input.parse({ query: '' })).toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: '' })).toThrow();
     });
 
     it('accepts a single-character query', () => {
-      expect(() => searchTool.input.parse({ query: 'a' })).not.toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'a' })).not.toThrow();
     });
 
     it('rejects missing query', () => {
-      expect(() => searchTool.input.parse({})).toThrow();
+      expect(() => searchCatalogTool.input.parse({})).toThrow();
+    });
+
+    it('accepts a query at the maximum boundary (500 chars)', () => {
+      expect(() => searchCatalogTool.input.parse({ query: 'a'.repeat(500) })).not.toThrow();
+    });
+
+    it('rejects a query one character over the maximum (501 chars)', () => {
+      expect(() => searchCatalogTool.input.parse({ query: 'a'.repeat(501) })).toThrow();
+    });
+
+    it('rejects a megabyte-scale query before it reaches the embedding model', () => {
+      expect(() => searchCatalogTool.input.parse({ query: 'x'.repeat(1_000_000) })).toThrow();
+    });
+
+    it('accepts realistic multi-sentence natural-language queries', () => {
+      const realistic = [
+        'what handles X',
+        'find data',
+        'which server can look up US federal court opinions and their citation networks',
+        'I need to search biomedical literature, fetch the full text of the papers I find, ' +
+          'and then format proper citations for a manuscript. Which tools cover that workflow ' +
+          'end to end, and which server owns them?',
+      ];
+      for (const query of realistic) {
+        expect(query.length).toBeLessThanOrEqual(500);
+        expect(() => searchCatalogTool.input.parse({ query })).not.toThrow();
+      }
     });
   });
 
   describe('limit field', () => {
     it('rejects limit below 1', () => {
-      expect(() => searchTool.input.parse({ query: 'test', limit: 0 })).toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 0 })).toThrow();
     });
 
     it('rejects limit above 20', () => {
-      expect(() => searchTool.input.parse({ query: 'test', limit: 21 })).toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 21 })).toThrow();
     });
 
     it('accepts limit at the minimum boundary (1)', () => {
-      expect(() => searchTool.input.parse({ query: 'test', limit: 1 })).not.toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 1 })).not.toThrow();
     });
 
     it('accepts limit at the maximum boundary (20)', () => {
-      expect(() => searchTool.input.parse({ query: 'test', limit: 20 })).not.toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 20 })).not.toThrow();
     });
 
     it('rejects non-integer limit', () => {
-      expect(() => searchTool.input.parse({ query: 'test', limit: 1.5 })).toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 1.5 })).toThrow();
     });
 
     it('defaults limit to 5 when omitted', () => {
-      const parsed = searchTool.input.parse({ query: 'test' });
+      const parsed = searchCatalogTool.input.parse({ query: 'test' });
       expect(parsed.limit).toBe(5);
     });
   });
 
   describe('scope field', () => {
     it('defaults to "tools" when omitted', () => {
-      const parsed = searchTool.input.parse({ query: 'test' });
+      const parsed = searchCatalogTool.input.parse({ query: 'test' });
       expect(parsed.scope).toBe('tools');
     });
 
     it('rejects unknown scope values', () => {
-      expect(() => searchTool.input.parse({ query: 'test', scope: 'invalid' })).toThrow();
+      expect(() => searchCatalogTool.input.parse({ query: 'test', scope: 'invalid' })).toThrow();
     });
 
     it('accepts "servers"', () => {
-      expect(() => searchTool.input.parse({ query: 'test', scope: 'servers' })).not.toThrow();
+      expect(() =>
+        searchCatalogTool.input.parse({ query: 'test', scope: 'servers' }),
+      ).not.toThrow();
     });
   });
 
   describe('category field', () => {
     it('rejects an unknown category string', () => {
       expect(() =>
-        searchTool.input.parse({ query: 'test', category: 'not-a-real-category' }),
+        searchCatalogTool.input.parse({ query: 'test', category: 'not-a-real-category' }),
       ).toThrow();
     });
 
     it('accepts all valid categories', () => {
       for (const cat of ['research', 'government', 'public-data', 'utility'] as const) {
-        expect(() => searchTool.input.parse({ query: 'test', category: cat })).not.toThrow();
+        expect(() => searchCatalogTool.input.parse({ query: 'test', category: cat })).not.toThrow();
       }
     });
   });
 });
 
-describe('cyanheads_search — edge cases', () => {
+describe('cyanheads_search_catalog — edge cases', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -199,8 +228,8 @@ describe('cyanheads_search — edge cases', () => {
 
   it('handles unicode query without error', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: '地震データ検索' });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({ query: '地震データ検索' });
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(result.scope).toBe('tools');
     // May return results or empty; must not throw
     expect(Array.isArray(result.results)).toBe(true);
@@ -208,29 +237,29 @@ describe('cyanheads_search — edge cases', () => {
 
   it('handles emoji-only query without error', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: '🌍🔍' });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({ query: '🌍🔍' });
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(Array.isArray(result.results)).toBe(true);
   });
 
   it('handles a query with leading and trailing whitespace', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: '  seismic  ' });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({ query: '  seismic  ' });
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(Array.isArray(result.results)).toBe(true);
   });
 
   it('returns at most limit results even when many match', async () => {
-    const ctx = createMockContext({ errors: searchTool.errors });
-    const input = searchTool.input.parse({ query: 'find data', limit: 1 });
-    const result = await searchTool.handler(input, ctx);
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
+    const input = searchCatalogTool.input.parse({ query: 'find data', limit: 1 });
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(result.results.length).toBeLessThanOrEqual(1);
   });
 
   it('scope "tools" produces result entries where server field is set', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: 'seismic', scope: 'tools', limit: 10 });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({ query: 'seismic', scope: 'tools', limit: 10 });
+    const result = await searchCatalogTool.handler(input, ctx);
     for (const r of result.results) {
       expect(typeof r.server).toBe('string');
       expect(r.server.length).toBeGreaterThan(0);
@@ -239,8 +268,8 @@ describe('cyanheads_search — edge cases', () => {
 
   it('scope "servers" produces result entries where name equals server', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: 'research', scope: 'servers', limit: 10 });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({ query: 'research', scope: 'servers', limit: 10 });
+    const result = await searchCatalogTool.handler(input, ctx);
     for (const r of result.results) {
       expect(r.name).toBe(r.server);
     }
@@ -248,8 +277,12 @@ describe('cyanheads_search — edge cases', () => {
 
   it('all result scores are in [0, 1] range', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: 'earthquake data', scope: 'tools', limit: 20 });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({
+      query: 'earthquake data',
+      scope: 'tools',
+      limit: 20,
+    });
+    const result = await searchCatalogTool.handler(input, ctx);
     for (const r of result.results) {
       expect(r.score).toBeGreaterThanOrEqual(0);
       expect(r.score).toBeLessThanOrEqual(1);
@@ -257,19 +290,19 @@ describe('cyanheads_search — edge cases', () => {
   });
 
   it('category filter with no matching entries returns empty results, not an error', async () => {
-    const ctx = createMockContext({ errors: searchTool.errors });
-    const input = searchTool.input.parse({
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
+    const input = searchCatalogTool.input.parse({
       query: 'seismic earthquake',
       scope: 'tools',
       category: 'government', // no government servers in fixture
       limit: 5,
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(result.results).toEqual([]);
   });
 });
 
-describe('cyanheads_search — security', () => {
+describe('cyanheads_search_catalog — security', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -291,8 +324,8 @@ describe('cyanheads_search — security', () => {
 
   it('output contains no env var names from server config', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({ query: 'seismic', limit: 5 });
-    const result = await searchTool.handler(input, ctx);
+    const input = searchCatalogTool.input.parse({ query: 'seismic', limit: 5 });
+    const result = await searchCatalogTool.handler(input, ctx);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('CATALOG_URL');
     expect(serialized).not.toContain('EMBEDDING_MODEL_ID');
@@ -302,42 +335,48 @@ describe('cyanheads_search — security', () => {
 
   it('SQL/SoQL injection string in query is passed through without executing', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: "'; DROP TABLE servers; --",
     });
     // Must not throw and must return a valid response
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(result).toBeDefined();
     expect(Array.isArray(result.results)).toBe(true);
   });
 
   it('script-injection string in query does not appear unescaped in result', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: '<script>alert("xss")</script>',
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
     // Results are data objects, not HTML — no XSS surface. Verify clean structure.
     expect(Array.isArray(result.results)).toBe(true);
   });
 
   it('path traversal string in query does not throw or expose filesystem paths', async () => {
     const ctx = createMockContext();
-    const input = searchTool.input.parse({
+    const input = searchCatalogTool.input.parse({
       query: '../../../../etc/passwd',
     });
-    const result = await searchTool.handler(input, ctx);
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(Array.isArray(result.results)).toBe(true);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('/etc/passwd');
   });
 
-  it('oversized query string (1001 chars) is accepted by Zod (no max constraint) and handled safely', async () => {
-    const ctx = createMockContext();
+  it('oversized query string is rejected by Zod before reaching the handler', () => {
     const longQuery = 'earthquake '.repeat(100).trim();
-    // No max constraint on query — accepted. Handler must not crash.
-    const input = searchTool.input.parse({ query: longQuery });
-    const result = await searchTool.handler(input, ctx);
+    expect(longQuery.length).toBeGreaterThan(500);
+    expect(() => searchCatalogTool.input.parse({ query: longQuery })).toThrow();
+  });
+
+  it('a long-but-permitted query still reaches the handler and is embedded', async () => {
+    const ctx = createMockContext();
+    const longQuery = 'earthquake '.repeat(45).trim();
+    expect(longQuery.length).toBeLessThanOrEqual(500);
+    const input = searchCatalogTool.input.parse({ query: longQuery });
+    const result = await searchCatalogTool.handler(input, ctx);
     expect(Array.isArray(result.results)).toBe(true);
   });
 
@@ -354,7 +393,7 @@ describe('cyanheads_search — security', () => {
       ],
       scope: 'tools' as const,
     };
-    const blocks = searchTool.format!(result);
+    const blocks = searchCatalogTool.format!(result);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).not.toContain('CATALOG_URL');
     expect(text).not.toContain('API_KEY');

@@ -1,20 +1,27 @@
 /**
- * @fileoverview Tests for the cyanheads_describe tool.
+ * @fileoverview Tests for the cyanheads_describe_entry tool.
  * Mocks globalThis.fetch and injects a deterministic embeddings runtime — no
  * live network or model loading.
- * @module tests/tools/describe.tool.test
+ * @module tests/tools/describe-entry.tool.test
  */
 
+import { readFileSync } from 'node:fs';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { describeTool } from '@/mcp-server/tools/definitions/describe.tool.js';
+import { describeEntryTool } from '@/mcp-server/tools/definitions/describe-entry.tool.js';
+import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
+import { initCatalogService } from '@/services/catalog/catalog-service.js';
+import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
 import {
   getCatalogService,
-  initCatalogService,
   resetCatalogServiceForTests,
-} from '@/services/catalog/catalog-service.js';
-import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
-import type { FleetPayload } from '@/services/catalog/types.js';
+} from '@/services/catalog/service-instance.js';
+import type { CatalogRecord, FleetPayload } from '@/services/catalog/types.js';
+
+/** Read independently of the self-record module, so a drift there is a test failure. */
+const selfPkg = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf-8'),
+) as { description: string; version: string };
 
 const TEST_MODEL = 'test/mock-embed-v1';
 const E0 = [1, 0, 0, 0];
@@ -113,7 +120,7 @@ function makeMockEmbeddings(): IEmbeddingsRuntime {
   };
 }
 
-describe('cyanheads_describe', () => {
+describe('cyanheads_describe_entry', () => {
   beforeEach(async () => {
     vi.stubGlobal(
       'fetch',
@@ -135,8 +142,8 @@ describe('cyanheads_describe', () => {
 
   it('resolves a hosted server by name', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
@@ -163,8 +170,8 @@ describe('cyanheads_describe', () => {
 
   it('resolves a tool by name', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
+    const { result } = await describeEntryTool.handler(input, ctx);
 
     expect(result.kind).toBe('tool');
     if (result.kind === 'tool') {
@@ -176,26 +183,26 @@ describe('cyanheads_describe', () => {
 
   it('auto-detects server kind from hyphenated name', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'wikipedia-mcp-server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'wikipedia-mcp-server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
   });
 
   it('auto-detects tool kind from underscore name', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'wikipedia_search' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'wikipedia_search' });
+    const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
   });
 
   it('filtering by client returns that client across both transports', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'claude-code',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
@@ -207,8 +214,8 @@ describe('cyanheads_describe', () => {
 
   it('http snippets target the endpoint; no snippet emits the legacy SSE tag', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
@@ -223,12 +230,12 @@ describe('cyanheads_describe', () => {
 
   it('claude-code local snippet uses `claude mcp add --transport stdio <name> -- npx -y <pkg>`', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'claude-code',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const stdio = result.installSnippets.find((s) => s.transport === 'stdio');
       expect(stdio?.payload).toBe(
@@ -239,12 +246,12 @@ describe('cyanheads_describe', () => {
 
   it('claude-code remote snippet uses `claude mcp add --transport http <name> <url>`', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'claude-code',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const http = result.installSnippets.find((s) => s.transport === 'http');
       expect(http?.payload).toBe(
@@ -255,12 +262,12 @@ describe('cyanheads_describe', () => {
 
   it('codex remote snippet matches `codex mcp add <name> --url <url>`', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'codex',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const http = result.installSnippets.find((s) => s.transport === 'http');
       expect(http?.payload).toBe(
@@ -271,12 +278,12 @@ describe('cyanheads_describe', () => {
 
   it('gemini remote snippet matches `gemini mcp add --transport http <name> <url>`', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'gemini',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const http = result.installSnippets.find((s) => s.transport === 'http');
       expect(http?.payload).toBe(
@@ -287,12 +294,12 @@ describe('cyanheads_describe', () => {
 
   it('cursor remote JSON omits the `type` field', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'cursor',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const http = result.installSnippets.find((s) => s.transport === 'http')!;
       const parsed = JSON.parse(http.payload);
@@ -304,12 +311,12 @@ describe('cyanheads_describe', () => {
 
   it('streamable-http remote JSON carries `type: "http"`', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'streamable-http',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       const http = result.installSnippets.find((s) => s.transport === 'http')!;
       const parsed = JSON.parse(http.payload);
@@ -322,12 +329,12 @@ describe('cyanheads_describe', () => {
 
   it('curl snippet POSTs initialize with the MCP-Protocol-Version header', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({
+    const input = describeEntryTool.input.parse({
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'curl',
     });
-    const { result } = await describeTool.handler(input, ctx);
+    const { result } = await describeEntryTool.handler(input, ctx);
     if (result.kind === 'server') {
       // curl is HTTP-only — exactly one snippet.
       expect(result.installSnippets).toHaveLength(1);
@@ -342,8 +349,8 @@ describe('cyanheads_describe', () => {
 
   it('resolves a local-only server: endpoint absent, stdio-only snippets, env vars surfaced', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'mailchimp-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'mailchimp-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
@@ -359,45 +366,45 @@ describe('cyanheads_describe', () => {
   });
 
   it('throws not_found for an unknown name', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'nonexistent-mcp-server', kind: 'server' });
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'nonexistent-mcp-server', kind: 'server' });
 
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('throws not_found when kind="tool" but the name only matches a server', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'tool' });
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'tool' });
 
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('throws not_found when kind="server" but the name only matches a tool', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'earthquake_search', kind: 'server' });
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'server' });
 
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('throws not_found when the name contains neither hyphen nor underscore and no kind is given', async () => {
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'unstructuredname' });
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'unstructuredname' });
 
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
     });
   });
 
   it('returns local + remote snippets for every client when client is omitted', async () => {
     const ctx = createMockContext();
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
-    const { result } = await describeTool.handler(input, ctx);
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
@@ -411,10 +418,10 @@ describe('cyanheads_describe', () => {
 
   it('throws catalog_empty when the catalog has not been initialized', async () => {
     resetCatalogServiceForTests();
-    const ctx = createMockContext({ errors: describeTool.errors });
-    const input = describeTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
 
-    await expect(describeTool.handler(input, ctx)).rejects.toMatchObject({
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'catalog_empty' },
     });
   });
@@ -428,7 +435,7 @@ describe('cyanheads_describe', () => {
         server: 'earthquake-mcp-server',
       },
     };
-    const blocks = describeTool.format!(output);
+    const blocks = describeEntryTool.format!(output);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).toContain('earthquake_search');
     expect(text).toContain('earthquake-mcp-server');
@@ -471,7 +478,7 @@ describe('cyanheads_describe', () => {
         ],
       },
     };
-    const blocks = describeTool.format!(output);
+    const blocks = describeEntryTool.format!(output);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).toContain('earthquake-mcp-server');
     expect(text).toContain('Earthquake');
@@ -487,6 +494,84 @@ describe('cyanheads_describe', () => {
     expect(text).toContain('--transport stdio');
     expect(text).toContain('## Remote install (HTTP)');
     expect(text).toContain('earthquake.caseyjhand.com');
+  });
+
+  it('describes this server itself, with both install transports', async () => {
+    const ctx = createMockContext();
+    const input = describeEntryTool.input.parse({ name: 'cyanheads-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
+
+    expect(result.kind).toBe('server');
+    if (result.kind === 'server') {
+      expect(result.name).toBe('cyanheads-mcp-server');
+      expect(result.displayName).toBe('cyanheads-mcp-server');
+      expect(result.npm).toBe('@cyanheads/cyanheads-mcp-server');
+      expect(result.github).toBe('https://github.com/cyanheads/cyanheads-mcp-server');
+      expect(result.endpoint).toBe('https://cyanheads.caseyjhand.com/mcp');
+      expect(result.auth).toBe('none');
+      expect(result.version).toBe(selfPkg.version);
+      expect(result.description).toBe(selfPkg.description);
+
+      // Tool list mirrors the tools this build actually registers.
+      expect(result.tools).toEqual([
+        { name: searchCatalogTool.name, description: searchCatalogTool.description },
+        { name: describeEntryTool.name, description: describeEntryTool.description },
+      ]);
+      expect(result.toolCount).toBe(2);
+
+      // Hosted record → the full 5 stdio + 6 http snippet set.
+      expect(result.installSnippets).toHaveLength(11);
+      const stdio = result.installSnippets.find(
+        (s) => s.transport === 'stdio' && s.client === 'claude-code',
+      );
+      expect(stdio?.payload).toBe(
+        'claude mcp add --transport stdio cyanheads-mcp-server -- npx -y @cyanheads/cyanheads-mcp-server',
+      );
+      const http = result.installSnippets.find(
+        (s) => s.transport === 'http' && s.client === 'claude-code',
+      );
+      expect(http?.payload).toBe(
+        'claude mcp add --transport http cyanheads-mcp-server https://cyanheads.caseyjhand.com/mcp',
+      );
+    }
+  });
+
+  it('auto-detects the self record as a server without an explicit kind', async () => {
+    const ctx = createMockContext();
+    const input = describeEntryTool.input.parse({ name: 'cyanheads-mcp-server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
+    expect(result.kind).toBe('server');
+  });
+
+  it('resolves this server’s own tools by name', async () => {
+    const ctx = createMockContext();
+    for (const definition of [searchCatalogTool, describeEntryTool]) {
+      const input = describeEntryTool.input.parse({ name: definition.name, kind: 'tool' });
+      const { result } = await describeEntryTool.handler(input, ctx);
+      expect(result.kind).toBe('tool');
+      if (result.kind === 'tool') {
+        expect(result.name).toBe(definition.name);
+        expect(result.server).toBe('cyanheads-mcp-server');
+        expect(result.description).toBe(definition.description);
+      }
+    }
+  });
+
+  it('renders the self record through format() with both install sections', async () => {
+    const ctx = createMockContext();
+    const input = describeEntryTool.input.parse({ name: 'cyanheads-mcp-server', kind: 'server' });
+    const output = await describeEntryTool.handler(input, ctx);
+    const blocks = describeEntryTool.format!(output);
+    const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
+
+    expect(text).toContain('# Server: cyanheads-mcp-server');
+    expect(text).toContain('@cyanheads/cyanheads-mcp-server');
+    expect(text).toContain('## Tools');
+    expect(text).toContain('cyanheads_search_catalog');
+    expect(text).toContain('cyanheads_describe_entry');
+    expect(text).toContain('## Local install (stdio)');
+    expect(text).toContain('## Remote install (HTTP)');
+    expect(text).toContain('https://cyanheads.caseyjhand.com/mcp');
   });
 
   it('renders the env-var note and no Remote section for a local-only server', () => {
@@ -513,12 +598,100 @@ describe('cyanheads_describe', () => {
         ],
       },
     };
-    const blocks = describeTool.format!(output);
+    const blocks = describeEntryTool.format!(output);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
     expect(text).toContain('## Tools');
     expect(text).toContain('mailchimp_list_audiences');
     expect(text).toContain('## Local install (stdio)');
     expect(text).toContain('MAILCHIMP_API_KEY');
     expect(text).not.toContain('## Remote install (HTTP)');
+  });
+});
+
+describe('cyanheads_describe_entry — self record superseded by the remote catalog', () => {
+  /**
+   * The self record exists only because the generated catalog omits this server.
+   * If the generator ever starts emitting it, the remote entry must win outright —
+   * no duplication, no stale local metadata masking the real record.
+   */
+  const REMOTE_SELF: CatalogRecord = {
+    name: 'cyanheads-mcp-server',
+    displayName: 'Cyanheads Discovery',
+    description: 'Remote-catalog description that must win over the local fallback.',
+    category: 'utility',
+    endpoint: 'https://remote.example.com/mcp',
+    npm: '@cyanheads/cyanheads-mcp-server',
+    github: 'https://github.com/cyanheads/cyanheads-mcp-server',
+    version: '99.0.0',
+    auth: 'none',
+    embedding: E0,
+    tools: [
+      { name: 'cyanheads_search_catalog', description: 'Remote description.', embedding: E0 },
+    ],
+  };
+
+  beforeEach(async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () =>
+          Promise.resolve({
+            ...FLEET_PAYLOAD,
+            servers: [...FLEET_PAYLOAD.servers, REMOTE_SELF],
+          } satisfies FleetPayload),
+      }),
+    );
+    initCatalogService(TEST_CONFIG, makeMockEmbeddings());
+    await getCatalogService().initialize();
+  });
+
+  afterEach(() => {
+    resetCatalogServiceForTests();
+    vi.restoreAllMocks();
+  });
+
+  it('returns the remote server entry, not the local fallback', async () => {
+    const ctx = createMockContext();
+    const input = describeEntryTool.input.parse({ name: 'cyanheads-mcp-server', kind: 'server' });
+    const { result } = await describeEntryTool.handler(input, ctx);
+
+    expect(result.kind).toBe('server');
+    if (result.kind === 'server') {
+      expect(result.displayName).toBe('Cyanheads Discovery');
+      expect(result.version).toBe('99.0.0');
+      expect(result.endpoint).toBe('https://remote.example.com/mcp');
+      expect(result.toolCount).toBe(1);
+    }
+  });
+
+  it('returns the remote tool entry, not the local fallback', async () => {
+    const ctx = createMockContext();
+    const input = describeEntryTool.input.parse({
+      name: 'cyanheads_search_catalog',
+      kind: 'tool',
+    });
+    const { result } = await describeEntryTool.handler(input, ctx);
+
+    expect(result.kind).toBe('tool');
+    if (result.kind === 'tool') {
+      expect(result.description).toBe('Remote description.');
+    }
+  });
+
+  it('still falls back for a tool the remote entry omits', async () => {
+    const ctx = createMockContext();
+    const input = describeEntryTool.input.parse({
+      name: 'cyanheads_describe_entry',
+      kind: 'tool',
+    });
+    const { result } = await describeEntryTool.handler(input, ctx);
+
+    expect(result.kind).toBe('tool');
+    if (result.kind === 'tool') {
+      expect(result.description).toBe(describeEntryTool.description);
+    }
   });
 });
