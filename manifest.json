@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "cyanheads-mcp-server",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
   "author": { "name": "cyanheads" },
   "repository": {
@@ -33,14 +33,14 @@
     "catalog_url": {
       "type": "string",
       "title": "Catalog URL",
-      "description": "Remote fleet.json endpoint (schema v2 with baked embeddings). Defaults to the canonical cyanheads fleet — override to point at your own hosted catalog.",
+      "description": "Remote fleet.json endpoint (schema v2 with baked embeddings), as an absolute URL. Defaults to the canonical cyanheads fleet — override to point at your own hosted catalog.",
       "required": false,
       "default": "https://caseyjhand.com/fleet.json"
     },
     "similarity_floor": {
       "type": "string",
       "title": "Similarity Floor",
-      "description": "Cosine similarity cutoff for cyanheads_search results (0-1). Raise to require closer matches; lower to surface more candidates.",
+      "description": "Cosine similarity cutoff for cyanheads_search results. Must be within [0, 1] — raise to require closer matches; lower to surface more candidates.",
       "required": false,
       "default": "0.3"
     }

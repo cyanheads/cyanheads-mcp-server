@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/cyanheads-mcp-server</h1>
-  <p><b>Discover MCP servers via semantic search. One endpoint, 40+ hosted servers, per-client install snippets. STDIO or Streamable HTTP.</b>
+  <p><b>Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.</b>
   <div>2 Tools • 0 Resources • 0 Prompts</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -204,11 +204,11 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path where the MCP server is mounted | `/mcp` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
-| `CATALOG_URL` | Remote fleet.json endpoint (schema v2 with baked embeddings). Override to front your own fleet. | `https://caseyjhand.com/fleet.json` |
-| `CATALOG_FETCH_TIMEOUT_MS` | Per-request timeout for fleet.json fetches in ms | `10000` |
-| `CATALOG_REFRESH_SECONDS` | Background poll interval for fleet.json refresh. `0` disables. | `3600` |
+| `CATALOG_URL` | Remote fleet.json endpoint (schema v2 with baked embeddings). Must be an absolute URL. Override to front your own fleet. | `https://caseyjhand.com/fleet.json` |
+| `CATALOG_FETCH_TIMEOUT_MS` | Per-request timeout for fleet.json fetches in ms. Must be > 0. | `10000` |
+| `CATALOG_REFRESH_SECONDS` | Background poll interval for fleet.json refresh. `0` disables; otherwise must be > 0. | `3600` |
 | `EMBEDDING_MODEL_ID` | Hugging Face model id for query embedding. Must match `fleet.json.embeddingModel`. | `Snowflake/snowflake-arctic-embed-m-v1.5` |
-| `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search` results (0-1) | `0.3` |
+| `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search` results. Must be within `[0, 1]`. | `0.3` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 
 To point at a different catalog, change `CATALOG_URL` to your own hosted JSON file. See [`docs/design.md`](./docs/design.md) for the producer-side script and schema.

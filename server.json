@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/cyanheads-mcp-server",
     "source": "github"
   },
-  "version": "0.3.3",
+  "version": "0.3.4",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/cyanheads-mcp-server",
       "runtimeHint": "node",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "packageArguments": [
         { "type": "positional", "value": "run" },
         { "type": "positional", "value": "start:stdio" }
@@ -41,7 +41,7 @@
         },
         {
           "name": "CATALOG_REFRESH_SECONDS",
-          "description": "Background poll interval for fleet.json refresh. 0 disables.",
+          "description": "Background poll interval for fleet.json refresh. 0 disables; otherwise must be > 0.",
           "format": "string",
           "isRequired": false,
           "default": "3600"
@@ -55,7 +55,7 @@
         },
         {
           "name": "SIMILARITY_FLOOR",
-          "description": "Cosine similarity cutoff for cyanheads_search results (0-1).",
+          "description": "Cosine similarity cutoff for cyanheads_search results. Must be within [0, 1].",
           "format": "string",
           "isRequired": false,
           "default": "0.3"
@@ -68,7 +68,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/cyanheads-mcp-server",
       "runtimeHint": "node",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "packageArguments": [
         { "type": "positional", "value": "run" },
         { "type": "positional", "value": "start:http" }
@@ -118,7 +118,7 @@
         },
         {
           "name": "CATALOG_REFRESH_SECONDS",
-          "description": "Background poll interval for fleet.json refresh. 0 disables.",
+          "description": "Background poll interval for fleet.json refresh. 0 disables; otherwise must be > 0.",
           "format": "string",
           "isRequired": false,
           "default": "3600"
@@ -132,7 +132,7 @@
         },
         {
           "name": "SIMILARITY_FLOOR",
-          "description": "Cosine similarity cutoff for cyanheads_search results (0-1).",
+          "description": "Cosine similarity cutoff for cyanheads_search results. Must be within [0, 1].",
           "format": "string",
           "isRequired": false,
           "default": "0.3"

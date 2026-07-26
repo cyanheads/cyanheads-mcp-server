@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.4](changelog/0.3.x/0.3.4.md) — 2026-07-26
+
+Fix unbounded config env vars (#8); adopt @cyanheads/mcp-ts-core ^0.11.0 with a supply-chain install guard, floating-specifier and plugin-manifest lint checks, and native-binding bundle stripping.
+
 ## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-06-11
 
 Adopt @cyanheads/mcp-ts-core ^0.10.6 — server name/title identity, Docker HEALTHCHECK + version label, bundle cleaner, tsx → bun run script migration.
