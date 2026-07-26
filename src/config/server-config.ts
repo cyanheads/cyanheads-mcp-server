@@ -13,27 +13,33 @@ const ServerConfigSchema = z.object({
    * Loaded at server startup via RemoteJsonCatalogProvider.
    */
   catalogUrl: z
-    .string()
+    .url()
     .default('https://caseyjhand.com/fleet.json')
     .describe('URL of the remote fleet.json catalog endpoint.'),
 
   /**
-   * Timeout in milliseconds for the remote catalog fetch.
+   * Timeout in milliseconds for the remote catalog fetch. Must be a positive,
+   * finite duration — a zero or negative timeout aborts every fetch before it
+   * can complete. `z.coerce.number()` already rejects NaN and Infinity.
    */
   catalogFetchTimeoutMs: z.coerce
     .number()
+    .positive()
     .default(10000)
-    .describe('HTTP timeout for remote catalog fetch in milliseconds.'),
+    .describe('HTTP timeout for remote catalog fetch in milliseconds. Must be > 0.'),
 
   /**
    * Background poll interval. The service re-fetches fleet.json on this cadence
    * and swaps in the new vector index if `generatedAt` changed.
-   * Set to 0 to disable background refresh.
+   * Set to 0 to disable background refresh; any other value must be positive.
    */
   catalogRefreshSeconds: z.coerce
     .number()
+    .nonnegative()
     .default(3600)
-    .describe('Seconds between background catalog re-fetches. 0 disables background refresh.'),
+    .describe(
+      'Seconds between background catalog re-fetches. 0 disables background refresh; otherwise must be > 0.',
+    ),
 
   /**
    * Embedding model identifier. Must match `embeddingModel` declared in fleet.json,
@@ -42,6 +48,7 @@ const ServerConfigSchema = z.object({
    */
   embeddingModelId: z
     .string()
+    .min(1)
     .default('Snowflake/snowflake-arctic-embed-m-v1.5')
     .describe(
       'Hugging Face model id used for query embedding at search time. Must match fleet.json.embeddingModel.',
@@ -53,6 +60,8 @@ const ServerConfigSchema = z.object({
    */
   similarityFloor: z.coerce
     .number()
+    .min(0)
+    .max(1)
     .default(0.3)
     .describe('Minimum cosine similarity in [0, 1] for a match to appear in search results.'),
 });

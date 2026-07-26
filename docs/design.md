@@ -388,11 +388,11 @@ Unchanged from the pre-pivot version — fetches `CATALOG_URL`, validates with Z
 
 | Env Var | Required | Default | Description |
 |:--------|:---------|:--------|:------------|
-| `CATALOG_URL` | No | `https://caseyjhand.com/fleet.json` | Remote fleet.json endpoint. Must return a valid `FleetPayload` (version "2"). |
-| `CATALOG_FETCH_TIMEOUT_MS` | No | `10000` | HTTP fetch timeout. |
-| `CATALOG_REFRESH_SECONDS` | No | `3600` | Background poll interval. Server re-fetches and swaps if `generatedAt` changed. |
+| `CATALOG_URL` | No | `https://caseyjhand.com/fleet.json` | Remote fleet.json endpoint. Absolute URL; must return a valid `FleetPayload` (version "2"). |
+| `CATALOG_FETCH_TIMEOUT_MS` | No | `10000` | HTTP fetch timeout. Must be > 0. |
+| `CATALOG_REFRESH_SECONDS` | No | `3600` | Background poll interval. Server re-fetches and swaps if `generatedAt` changed. `0` disables; otherwise must be > 0. |
 | `EMBEDDING_MODEL_ID` | No | `Snowflake/snowflake-arctic-embed-m-v1.5` | Must match `FleetPayload.embeddingModel`; mismatch is a startup error. |
-| `SIMILARITY_FLOOR` | No | `0.3` | Minimum cosine similarity for a result to appear in `cyanheads_search` output. |
+| `SIMILARITY_FLOOR` | No | `0.3` | Minimum cosine similarity for a result to appear in `cyanheads_search` output. Must be within `[0, 1]`. |
 | `MCP_AUTH_MODE` | No | `none` | Framework default for v0 public discovery. |
 
 Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, …) are owned by `@cyanheads/mcp-ts-core`.
