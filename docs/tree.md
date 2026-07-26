@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-07-26 22:05:04
+Generated on: 2026-07-26 23:12:11
 
 ```text
 cyanheads-mcp-server/
@@ -25,6 +25,7 @@ cyanheads-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -140,13 +141,15 @@ cyanheads-mcp-server/
 │   │   │   └── definitions/
 │   │   └── tools/
 │   │       └── definitions/
-│   │           ├── describe.tool.ts
-│   │           └── search.tool.ts
+│   │           ├── describe-entry.tool.ts
+│   │           └── search-catalog.tool.ts
 │   ├── services/
 │   │   └── catalog/
 │   │       ├── catalog-service.ts
 │   │       ├── embeddings-runtime.ts
 │   │       ├── remote-catalog-provider.ts
+│   │       ├── self-record.ts
+│   │       ├── service-instance.ts
 │   │       ├── snippets.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -162,10 +165,10 @@ cyanheads-mcp-server/
 │   │   ├── remote-catalog-provider.test.ts
 │   │   └── snippets.test.ts
 │   └── tools/
-│       ├── describe-input-validation.test.ts
-│       ├── describe.tool.test.ts
-│       ├── search-input-validation.test.ts
-│       └── search.tool.test.ts
+│       ├── describe-entry-input-validation.test.ts
+│       ├── describe-entry.tool.test.ts
+│       ├── search-catalog-input-validation.test.ts
+│       └── search-catalog.tool.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

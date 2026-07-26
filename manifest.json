@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "cyanheads-mcp-server",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
   "author": { "name": "cyanheads" },
   "repository": {
@@ -40,7 +40,7 @@
     "similarity_floor": {
       "type": "string",
       "title": "Similarity Floor",
-      "description": "Cosine similarity cutoff for cyanheads_search results. Must be within [0, 1] — raise to require closer matches; lower to surface more candidates.",
+      "description": "Cosine similarity cutoff for cyanheads_search_catalog results. Must be within [0, 1] — raise to require closer matches; lower to surface more candidates.",
       "required": false,
       "default": "0.3"
     }

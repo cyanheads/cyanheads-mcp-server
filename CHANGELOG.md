@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-26 · ⚠️ Breaking
+
+Breaking tool rename (cyanheads_search_catalog / cyanheads_describe_entry), input-length bounds, and a self-description fallback for the front door's own server entry
+
 ## [0.3.4](changelog/0.3.x/0.3.4.md) — 2026-07-26
 
 Fix unbounded config env vars (#8); adopt @cyanheads/mcp-ts-core ^0.11.0 with a supply-chain install guard, floating-specifier and plugin-manifest lint checks, and native-binding bundle stripping.

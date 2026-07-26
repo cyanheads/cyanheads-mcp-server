@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** cyanheads-mcp-server
-**Version:** 0.3.4
+**Version:** 0.4.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.0`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -15,10 +15,12 @@
 
 A fleet discovery surface for the cyanheads MCP ecosystem. Two tools:
 
-- **`cyanheads_search`** — semantic search across fleet tools and servers using cosine similarity over Matryoshka-truncated 256-dim embeddings from `Snowflake/snowflake-arctic-embed-m-v1.5`.
-- **`cyanheads_describe`** — returns the description, connection URL, and per-client install snippet for any named tool or server.
+- **`cyanheads_search_catalog`** — semantic search across fleet tools and servers using cosine similarity over Matryoshka-truncated 256-dim embeddings from `Snowflake/snowflake-arctic-embed-m-v1.5`.
+- **`cyanheads_describe_entry`** — returns the description, connection URL, and per-client install snippet for any named tool or server.
 
 The catalog (`fleet.json`) is produced by `caseyjhand-portfolio/scripts/build-fleet-json.ts` at portfolio deploy time. Document vectors are baked into the JSON. The server only embeds the user's query at runtime via `@huggingface/transformers`. See `docs/design.md` for the full architecture.
+
+The generated catalog does not include this server, so `src/services/catalog/self-record.ts` supplies a static `CatalogRecord` for `cyanheads-mcp-server` that `CatalogService.getServer()` / `getTool()` consult **only after** the remote index misses. A remote entry always wins, so the fallback self-heals to dead code if the generator ever starts emitting one. The record is never part of the vector index, so semantic search does not surface it — only exact-name resolution does.
 
 ---
 

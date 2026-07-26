@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -33,24 +33,25 @@ Two tools, semantic ranking, hosted catalog. The catalog itself lives at [`casey
 
 | Tool | Description |
 |:---|:---|
-| `cyanheads_search` | Search fleet tools and servers by natural-language query. Returns ranked matches with brief summaries and the owning server. |
-| `cyanheads_describe` | Return the connection URL and per-client install snippets for a named tool or server. |
+| `cyanheads_search_catalog` | Search fleet tools and servers by natural-language query. Returns ranked matches with brief summaries and the owning server. |
+| `cyanheads_describe_entry` | Return the connection URL and per-client install snippets for a named tool or server. |
 
-### `cyanheads_search`
+### `cyanheads_search_catalog`
 
 Semantic search across the fleet. Embeds the query with [Snowflake Arctic Embed M v1.5](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) (Matryoshka-truncated to 256 dimensions) and computes cosine similarity against the catalog's pre-computed document vectors.
 
+- `query` accepts 1-500 characters
 - `scope: "tools"` (default) returns individual tool matches; `scope: "servers"` returns server-level matches
 - `category` filter narrows to one of `research`, `government`, `public-data`, `utility`
 - Configurable `limit` (1-20, default 5) and a server-side `SIMILARITY_FLOOR` threshold drop low-confidence hits
 - Returns `score` (cosine similarity in [0, 1]) on every result for trust calibration
-- `totalMatched` reports the count above the floor before the limit was applied
+- `totalCount` reports the count above the floor before the limit was applied
 
 ---
 
-### `cyanheads_describe`
+### `cyanheads_describe_entry`
 
-Resolve a name to its install instructions. Accepts either a tool name (snake_case, e.g. `earthquake_search`) or a server name (kebab-case, e.g. `earthquake-mcp-server`) — auto-detected from the format, or pinned via the `kind` parameter.
+Resolve a name to its install instructions. Accepts either a tool name (snake_case, e.g. `earthquake_search`) or a server name (kebab-case, e.g. `earthquake-mcp-server`), up to 64 characters — auto-detected from the format, or pinned via the `kind` parameter.
 
 - For tools: returns the description and the owning server name
 - For servers: returns description, version, npm package, GitHub URL, the full tool list (each tool's name and description), and per-client install snippets — **local (stdio, via `npx`) for every server, plus remote (Streamable HTTP) when a hosted endpoint exists**
@@ -77,7 +78,7 @@ Fleet-specific:
 
 ## What's in the fleet
 
-40+ MCP servers spanning four categories. Each is open source and individually addressable — `cyanheads_describe` returns its direct connection URL alongside the install snippet.
+100+ MCP servers spanning four categories. Each is open source and individually addressable — `cyanheads_describe_entry` returns its direct connection URL alongside the install snippet. It also describes this server: ask for `cyanheads-mcp-server` and you get the front door's own endpoint and install snippets.
 
 | Category | Examples |
 |:--|:--|
@@ -208,7 +209,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `CATALOG_FETCH_TIMEOUT_MS` | Per-request timeout for fleet.json fetches in ms. Must be > 0. | `10000` |
 | `CATALOG_REFRESH_SECONDS` | Background poll interval for fleet.json refresh. `0` disables; otherwise must be > 0. | `3600` |
 | `EMBEDDING_MODEL_ID` | Hugging Face model id for query embedding. Must match `fleet.json.embeddingModel`. | `Snowflake/snowflake-arctic-embed-m-v1.5` |
-| `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search` results. Must be within `[0, 1]`. | `0.3` |
+| `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search_catalog` results. Must be within `[0, 1]`. | `0.3` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 
 To point at a different catalog, change `CATALOG_URL` to your own hosted JSON file. See [`docs/design.md`](./docs/design.md) for the producer-side script and schema.
@@ -239,9 +240,8 @@ To point at a different catalog, change `CATALOG_URL` to your own hosted JSON fi
 
 | Directory | Purpose |
 |:---|:---|
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Two tools — `cyanheads_search` and `cyanheads_describe`. |
-| `src/services/catalog` | Catalog service — remote fleet.json provider with atomic-swap refresh, vector index, snippet builders. |
-| `src/services/embeddings` | Embedding runtime — query-time inference via `@huggingface/transformers`, with an injectable interface for deterministic tests. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`). Two tools — `cyanheads_search_catalog` and `cyanheads_describe_entry`. |
+| `src/services/catalog` | Catalog service — remote fleet.json provider with atomic-swap refresh, vector index, snippet builders, the self-description fallback record, and the query-time embedding runtime (`@huggingface/transformers`, behind an injectable interface for deterministic tests). |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
 | `tests/` | Unit and integration tests, mirroring the `src/` structure. |
 | `docs/` | Design doc and schema reference. |
@@ -252,7 +252,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for logging, `ctx.state` for storage
-- Register new tools in `src/mcp-server/tools/definitions/index.ts`
+- Register new tools in the `tools` array passed to `createApp()` in `src/index.ts`
 
 ## Contributing
 
