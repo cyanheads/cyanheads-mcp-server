@@ -1,0 +1,20 @@
+{
+  "name": "cyanheads-mcp-server",
+  "version": "0.3.4",
+  "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
+  "author": {
+    "name": "cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/cyanheads-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/cyanheads-mcp-server",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "cyanheads-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/cyanheads-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio"
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "cyanheads-mcp-server",
+  "version": "0.3.4",
+  "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/cyanheads-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/cyanheads-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "mcp-discovery",
+    "mcp-fleet",
+    "semantic-search"
+  ],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "cyanheads-mcp-server",
+    "shortDescription": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
+    "longDescription": "Search the cyanheads MCP fleet by natural-language query and get connection URLs plus per-client install snippets for any tool or server. STDIO or Streamable HTTP.",
+    "developerName": "cyanheads",
+    "category": "developer-tools",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/cyanheads-mcp-server",
+    "defaultPrompt": []
+  }
+}
