@@ -23,7 +23,7 @@ type StdioFactory = (record: CatalogRecord) => InstallSnippet;
 type HttpFactory = (record: CatalogRecord, endpoint: string) => InstallSnippet;
 
 /** MCP protocol version pinned in the curl `initialize` snippet. */
-const CURL_MCP_PROTOCOL_VERSION = '2025-11-25';
+const CURL_MCP_PROTOCOL_VERSION = '2026-07-28';
 
 /**
  * `env` block for a JSON config snippet — one empty-valued key per required var.

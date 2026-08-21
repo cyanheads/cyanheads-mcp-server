@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @fileoverview cyanheads-mcp-server entry point — fleet discovery and passthrough gateway.
+ * @fileoverview cyanheads-mcp-server entry point — fleet discovery and install guidance.
  * @module index
  */
 

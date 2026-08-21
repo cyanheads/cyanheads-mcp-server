@@ -22,8 +22,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
   description:
     'Search fleet tools and servers by natural-language description. Returns ranked matches with ' +
     'brief summaries and the server each tool belongs to. Use scope "servers" to find which ' +
-    'server handles a workflow; use the default scope "tools" to find specific tools. ' +
-    'Call cyanheads_describe_entry on a result name to get install snippets and the connection URL.',
+    'server handles a workflow; use the default scope "tools" to find specific tools.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   auth: ['tool:cyanheads_search_catalog:read'],
 

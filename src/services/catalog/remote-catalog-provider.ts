@@ -6,7 +6,8 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { internalError, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { fetchWithTimeout, requestContextService } from '@cyanheads/mcp-ts-core/utils';
 import type { ServerConfig } from '@/config/server-config.js';
 import type { FleetPayload } from './types.js';
 
@@ -61,41 +62,21 @@ export class RemoteJsonCatalogProvider {
 
   /**
    * Fetch and validate the remote fleet.json payload.
-   * Merges the provided signal (if any) with the configured timeout signal.
-   * Throws McpError(InternalError) on any failure.
+   * Applies the configured whole-exchange timeout and merges the provided signal.
+   * Throws a typed framework error on any failure.
    */
   async load(signal?: AbortSignal): Promise<FleetPayload> {
-    const timeoutSignal = AbortSignal.timeout(this._timeoutMs);
-
-    const combinedSignal =
-      signal != null ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-
-    let response: Response;
-    try {
-      response = await fetch(this._url, { signal: combinedSignal });
-    } catch (err) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        `Catalog fetch failed: ${err instanceof Error ? err.message : String(err)}`,
-        { url: this._url },
-        { cause: err },
-      );
-    }
-
-    if (!response.ok) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        `Catalog fetch returned ${response.status} ${response.statusText}`,
-        { url: this._url, status: response.status, statusText: response.statusText },
-      );
-    }
+    const context = requestContextService.createRequestContext({ operation: 'CatalogFetch' });
+    const response = await fetchWithTimeout(this._url, this._timeoutMs, context, {
+      ...(signal ? { signal } : {}),
+    });
 
     let raw: unknown;
     try {
       raw = await response.json();
     } catch (err) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
+      if (err instanceof McpError) throw err;
+      throw internalError(
         `Catalog response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
         { url: this._url },
         { cause: err },
@@ -107,11 +88,10 @@ export class RemoteJsonCatalogProvider {
       const first = parsed.error.issues[0];
       const path = first?.path.join('.') ?? '(unknown)';
       const msg = first?.message ?? 'validation failed';
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
-        `Catalog payload failed validation at ${path}: ${msg}`,
-        { url: this._url, issues: parsed.error.issues.slice(0, 5) },
-      );
+      throw internalError(`Catalog payload failed validation at ${path}: ${msg}`, {
+        url: this._url,
+        issues: parsed.error.issues.slice(0, 5),
+      });
     }
 
     return parsed.data as FleetPayload;

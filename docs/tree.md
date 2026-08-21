@@ -1,11 +1,9 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-07-26 23:12:11
+Generated on: 2026-08-21 22:56:50
 
 ```text
 cyanheads-mcp-server/
-├── .agents/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -16,6 +14,8 @@ cyanheads-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/
@@ -156,6 +156,12 @@ cyanheads-mcp-server/
 ├── tests/
 │   ├── config/
 │   │   └── server-config.test.ts
+│   ├── fixtures/
+│   │   └── catalog-service.ts
+│   ├── fuzz/
+│   │   └── tools.fuzz.test.ts
+│   ├── integration/
+│   │   └── tool-contracts.int.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
@@ -164,6 +170,8 @@ cyanheads-mcp-server/
 │   │   ├── embeddings-runtime.test.ts
 │   │   ├── remote-catalog-provider.test.ts
 │   │   └── snippets.test.ts
+│   ├── smoke/
+│   │   └── definitions.smoke.test.ts
 │   └── tools/
 │       ├── describe-entry-input-validation.test.ts
 │       ├── describe-entry.tool.test.ts

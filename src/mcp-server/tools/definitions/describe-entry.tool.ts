@@ -25,8 +25,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
     'Return the description and install snippets for a named tool or server. For tools: the ' +
     'description and the server it belongs to. For servers: local (stdio, via npx) install ' +
     'snippets for every published server, plus remote (HTTP) connection snippets when a hosted ' +
-    'endpoint exists — for every supported client, or one client via the client parameter. ' +
-    'Call cyanheads_search_catalog first to find valid names.',
+    'endpoint exists — for every supported client, or one client via the client parameter.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   auth: ['tool:cyanheads_describe_entry:read'],
 

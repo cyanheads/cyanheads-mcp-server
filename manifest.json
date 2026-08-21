@@ -1,9 +1,13 @@
 {
   "manifest_version": "0.3",
   "name": "cyanheads-mcp-server",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
-  "author": { "name": "cyanheads" },
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cyanheads/cyanheads-mcp-server"
@@ -21,6 +25,9 @@
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
         "CATALOG_URL": "${user_config.catalog_url}",
+        "CATALOG_FETCH_TIMEOUT_MS": "${user_config.catalog_fetch_timeout_ms}",
+        "CATALOG_REFRESH_SECONDS": "${user_config.catalog_refresh_seconds}",
+        "EMBEDDING_MODEL_ID": "${user_config.embedding_model_id}",
         "SIMILARITY_FLOOR": "${user_config.similarity_floor}"
       }
     }
@@ -29,6 +36,7 @@
     "runtimes": { "node": ">=24.0.0" }
   },
   "tools_generated": true,
+  "prompts_generated": true,
   "user_config": {
     "catalog_url": {
       "type": "string",
@@ -36,6 +44,27 @@
       "description": "Remote fleet.json endpoint (schema v2 with baked embeddings), as an absolute URL. Defaults to the canonical cyanheads fleet — override to point at your own hosted catalog.",
       "required": false,
       "default": "https://caseyjhand.com/fleet.json"
+    },
+    "catalog_fetch_timeout_ms": {
+      "type": "string",
+      "title": "Catalog Fetch Timeout",
+      "description": "Per-request timeout for fleet.json fetches in milliseconds. Must be greater than 0.",
+      "required": false,
+      "default": "10000"
+    },
+    "catalog_refresh_seconds": {
+      "type": "string",
+      "title": "Catalog Refresh Interval",
+      "description": "Background poll interval for fleet.json refreshes in seconds. Set to 0 to disable background refresh.",
+      "required": false,
+      "default": "3600"
+    },
+    "embedding_model_id": {
+      "type": "string",
+      "title": "Embedding Model ID",
+      "description": "Hugging Face model id for query embedding. Must match fleet.json.embeddingModel.",
+      "required": false,
+      "default": "Snowflake/snowflake-arctic-embed-m-v1.5"
     },
     "similarity_floor": {
       "type": "string",

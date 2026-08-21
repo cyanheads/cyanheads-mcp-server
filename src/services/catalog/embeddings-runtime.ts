@@ -13,7 +13,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { internalError } from '@cyanheads/mcp-ts-core/errors';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { env, type FeatureExtractionPipeline, pipeline } from '@huggingface/transformers';
 
@@ -55,8 +55,7 @@ export class TransformersEmbeddingsRuntime implements IEmbeddingsRuntime {
           return extractor;
         } catch (err) {
           this._loadPromise = null;
-          throw new McpError(
-            JsonRpcErrorCode.InternalError,
+          throw internalError(
             `Failed to load embedding model ${this.modelId}: ${err instanceof Error ? err.message : String(err)}`,
             { modelId: this.modelId },
             { cause: err },
@@ -77,8 +76,7 @@ export class TransformersEmbeddingsRuntime implements IEmbeddingsRuntime {
     const rows = tensor.tolist() as number[][];
     const fullVec = rows[0];
     if (!fullVec || fullVec.length < dims) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
+      throw internalError(
         `Embedding pipeline returned a vector of length ${fullVec?.length ?? 0}; expected at least ${dims}.`,
       );
     }

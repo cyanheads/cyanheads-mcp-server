@@ -7,7 +7,7 @@
  * @module services/catalog/catalog-service
  */
 
-import { JsonRpcErrorCode, McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { internalError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
 import type { ServerConfig } from '@/config/server-config.js';
 import { type IEmbeddingsRuntime, TransformersEmbeddingsRuntime } from './embeddings-runtime.js';
@@ -214,8 +214,7 @@ export class CatalogService implements ICatalogService {
 
   private _assertModelMatch(payload: FleetPayload): void {
     if (payload.embeddingModel !== this._config.embeddingModelId) {
-      throw new McpError(
-        JsonRpcErrorCode.InternalError,
+      throw internalError(
         `Catalog embedding model mismatch: payload declares "${payload.embeddingModel}" but server expects "${this._config.embeddingModelId}". ` +
           'Update EMBEDDING_MODEL_ID or regenerate the catalog with the matching model.',
         {
@@ -241,14 +240,12 @@ export class CatalogService implements ICatalogService {
     let toolI = 0;
     for (const [si, server] of payload.servers.entries()) {
       if (server.name.includes('_')) {
-        throw new McpError(
-          JsonRpcErrorCode.InternalError,
+        throw internalError(
           `Server name "${server.name}" contains underscores. Fleet naming convention requires hyphenated server names.`,
         );
       }
       if (server.embedding.length !== dims) {
-        throw new McpError(
-          JsonRpcErrorCode.InternalError,
+        throw internalError(
           `Server "${server.name}" embedding has ${server.embedding.length} dims; expected ${dims}.`,
         );
       }
@@ -258,8 +255,7 @@ export class CatalogService implements ICatalogService {
 
       for (const tool of server.tools) {
         if (tool.embedding.length !== dims) {
-          throw new McpError(
-            JsonRpcErrorCode.InternalError,
+          throw internalError(
             `Tool "${tool.name}" embedding has ${tool.embedding.length} dims; expected ${dims}.`,
           );
         }

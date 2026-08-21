@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-08-21
+
+mcp-ts-core 0.12.3 adoption and expanded test coverage
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-26 · ⚠️ Breaking
 
 Breaking tool rename (cyanheads_search_catalog / cyanheads_describe_entry), input-length bounds, and a self-description fallback for the front door's own server entry

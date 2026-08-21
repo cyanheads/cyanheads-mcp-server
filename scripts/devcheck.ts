@@ -294,8 +294,10 @@ const DIRECT_DEPS: ReadonlySet<string> = (() => {
  * direct (in our package.json) or upstream (transitive dependency we can't fix).
  *
  * Bun audit format per vulnerability block:
- *   <package>  <version-range>        ← header (no indent, 2+ spaces before range)
- *     <parent> › <child> [› ...]      ← dependency path (indented, › = transitive)
+ *   <package>  <version-range>        ← Bun ≤1.3 header
+ *   <package>@<version>               ← Bun ≥1.4 header
+ *     <parent> › <child> [› ...]      ← Bun ≤1.3 dependency path
+ *     <parent> > <child> [> ...]      ← Bun ≥1.4 dependency path
  *     <severity>: <description>       ← advisory (indented)
  *
  * Returns null if parsing yields no results (caller should fall back to default behavior).
@@ -308,8 +310,12 @@ function classifyAuditVulns(output: string): { direct: string[]; upstream: strin
     let i = 0;
 
     while (i < lines.length) {
-      // Package header: non-indented, name followed by 2+ spaces then version constraint
-      const pkgMatch = lines[i]?.match(/^([@\w][\w./-]*)\s{2,}(.+)$/);
+      // Package header: support both Bun ≤1.3's two-column form and Bun ≥1.4's
+      // npm-spec form. Scoped names require splitting on the final `@`.
+      const line = lines[i] ?? '';
+      const legacyMatch = line.match(/^([@\w][\w./-]*)\s{2,}(.+)$/);
+      const npmSpecMatch = line.match(/^((?:@[^/\s]+\/)?[^@\s]+)@(.+)$/);
+      const pkgMatch = legacyMatch ?? npmSpecMatch;
       if (!pkgMatch) {
         i++;
         continue;
@@ -334,14 +340,14 @@ function classifyAuditVulns(output: string): { direct: string[]; upstream: strin
 
       if (!hasHighCritical) continue;
 
-      // Direct if: the vulnerable package is in our package.json,
-      // or any dependency path lacks › (meaning it's not pulled in transitively)
+      // Direct if: the vulnerable package is in our package.json, or any
+      // dependency path lacks Bun's old/new separator (not pulled transitively).
       const pkgName = pkg ?? '';
-      const isDirect = DIRECT_DEPS.has(pkgName) || paths.some((p) => !p.includes('\u203a'));
+      const isDirect = DIRECT_DEPS.has(pkgName) || paths.some((p) => !/[›>]/.test(p));
       if (isDirect) {
         direct.push(`${pkgName} ${versionRange}`);
       } else {
-        const via = paths[0]?.split(/\s*\u203a\s*/)[0] ?? 'unknown';
+        const via = paths[0]?.split(/\s*(?:\u203a|>)\s*/)[0] ?? 'unknown';
         upstream.push(`${pkgName} ${versionRange} (via ${via})`);
       }
     }
