@@ -9,9 +9,13 @@ versions are not patched — upgrade to the current release.
 
 Please do not open a public issue for security reports. Instead:
 
-- Report privately via GitHub: **Security** tab → **Report a vulnerability**, or
-- Email **casey@caseyjhand.com**
+<!-- GitHub's private reporting is off by default. Turn it on under
+     Settings → Code security → Private vulnerability reporting. -->
 
-Include a minimal reproduction where possible. You'll receive an
-acknowledgment within a few days, and credit in the release notes if the
-report leads to a fix (unless you prefer otherwise).
+- Report privately via GitHub: **Security** tab → **Report a vulnerability**, or
+- Email **[security@caseyjhand.com](mailto:security@caseyjhand.com)**
+
+Include a minimal reproduction where possible, with any API keys, tokens, or
+credentials redacted — a placeholder is enough to show the shape. You'll receive
+an acknowledgment within a few days, and credit in the release notes if the report
+leads to a fix (unless you prefer otherwise).
