@@ -109,7 +109,6 @@ const FLEET_PAYLOAD: FleetPayload = {
 function makeMockEmbeddings(vectors: Record<string, number[]>): IEmbeddingsRuntime {
   return {
     modelId: TEST_MODEL,
-    async initialize() {},
     async embedQuery(text: string, dims: number) {
       const raw = vectors[text] ?? [0, 0, 0, 1];
       let sumSq = 0;
@@ -150,7 +149,7 @@ describe('cyanheads_search_catalog', () => {
   });
 
   it('returns ranked tool matches for a query', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'seismic earthquake activity',
       scope: 'tools',
@@ -167,7 +166,7 @@ describe('cyanheads_search_catalog', () => {
     expect(typeof enrichment.totalCount).toBe('number');
     expect(enrichment.totalCount).toBeGreaterThanOrEqual(result.results.length);
 
-    const top = result.results[0];
+    const top = result.results[0]!;
     expect(top.name).toBe('earthquake_search');
     expect(top.server).toBe('earthquake-mcp-server');
     expect(top.score).toBeGreaterThan(0.9);
@@ -176,7 +175,7 @@ describe('cyanheads_search_catalog', () => {
   });
 
   it('returns server-scope matches', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'arxiv research papers',
       scope: 'servers',
@@ -186,7 +185,7 @@ describe('cyanheads_search_catalog', () => {
 
     expect(result.scope).toBe('servers');
     expect(result.results.length).toBeGreaterThan(0);
-    expect(result.results[0].name).toBe('arxiv-mcp-server');
+    expect(result.results[0]!.name).toBe('arxiv-mcp-server');
     for (const r of result.results) {
       expect(r.name).toBe(r.server);
     }
@@ -238,11 +237,11 @@ describe('cyanheads_search_catalog', () => {
     expect(enrichment.effectiveQuery).toBe('totally unrelated capability');
     expect(enrichment.totalCount).toBe(0);
     expect(typeof enrichment.notice).toBe('string');
-    expect(enrichment.notice!.length).toBeGreaterThan(0);
+    expect(typeof enrichment.notice === 'string' && enrichment.notice.length).toBeGreaterThan(0);
   });
 
   it('includes servers roll-up in tools-scope results', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'broad seismic and research query',
       scope: 'tools',
@@ -275,7 +274,7 @@ describe('cyanheads_search_catalog', () => {
   });
 
   it('omits servers roll-up in servers scope', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'arxiv research papers',
       scope: 'servers',
@@ -290,7 +289,7 @@ describe('cyanheads_search_catalog', () => {
 
   it('servers roll-up is capped at 10', async () => {
     // With 3 servers in the fixture, cap is not exercised — verify it never exceeds 10
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'both research and seismic',
       scope: 'tools',
@@ -315,7 +314,7 @@ describe('cyanheads_search_catalog', () => {
   });
 
   it('ranks multiple matches in descending score order', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'both research and seismic',
       scope: 'servers',

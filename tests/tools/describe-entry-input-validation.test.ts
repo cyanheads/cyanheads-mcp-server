@@ -97,7 +97,6 @@ const FLEET_PAYLOAD: FleetPayload = {
 function makeMockEmbeddings(): IEmbeddingsRuntime {
   return {
     modelId: TEST_MODEL,
-    async initialize() {},
     async embedQuery(_text: string, dims: number) {
       const out = new Float32Array(dims);
       out[0] = 1;
@@ -200,7 +199,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('returns toolCount matching the fixture tool count', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
@@ -210,7 +209,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('tool result does not include installSnippets field', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
@@ -219,7 +218,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('server result does not include a tool-only server field', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
@@ -228,7 +227,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('resolves second server in fixture', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'arxiv-mcp-server', kind: 'server' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('server');
@@ -239,7 +238,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('resolves a tool from the second server', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'arxiv_search', kind: 'tool' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
@@ -249,7 +248,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('filtering by client returns that client across local and remote transports', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({
       name: 'arxiv-mcp-server',
       kind: 'server',
@@ -264,7 +263,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
   });
 
   it('http snippet reflects the actual endpoint from the catalog', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({
       name: 'arxiv-mcp-server',
       kind: 'server',
@@ -299,7 +298,7 @@ describe('cyanheads_describe_entry — edge cases', () => {
   });
 
   it('auto-detects server kind for a name with hyphens and no underscores', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     // No explicit kind — hyphens → server
     const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server' });
     const { result } = await describeEntryTool.handler(input, ctx);
@@ -307,7 +306,7 @@ describe('cyanheads_describe_entry — edge cases', () => {
   });
 
   it('auto-detects tool kind for a name with underscores and no hyphens', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     // No explicit kind — underscores → tool
     const input = describeEntryTool.input.parse({ name: 'arxiv_search' });
     const { result } = await describeEntryTool.handler(input, ctx);
@@ -368,7 +367,7 @@ describe('cyanheads_describe_entry — security', () => {
   });
 
   it('output contains no env var names from server config', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'server' });
     const { result } = await describeEntryTool.handler(input, ctx);
     const serialized = JSON.stringify(result);
@@ -380,7 +379,9 @@ describe('cyanheads_describe_entry — security', () => {
   it('error for not_found does not leak internal catalog path or config', async () => {
     const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'nonexistent-server', kind: 'server' });
-    const err = await describeEntryTool.handler(input, ctx).catch((e: unknown) => e);
+    const err = await Promise.resolve(describeEntryTool.handler(input, ctx)).catch(
+      (e: unknown) => e,
+    );
     const msg = String(err instanceof Error ? err.message : err);
     expect(msg).not.toContain('CATALOG_URL');
     expect(msg).not.toContain('test.example.com');

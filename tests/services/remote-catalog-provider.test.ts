@@ -4,6 +4,7 @@
  * @module tests/services/remote-catalog-provider.test
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RemoteJsonCatalogProvider } from '@/services/catalog/remote-catalog-provider.js';
 import type { FleetPayload } from '@/services/catalog/types.js';
@@ -58,15 +59,7 @@ function mockFetchOk(payload: unknown): void {
 }
 
 function mockFetchStatus(status: number, statusText: string): void {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: false,
-      status,
-      statusText,
-      json: () => Promise.reject(new Error('body unavailable')),
-    }),
-  );
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status, statusText })));
 }
 
 function mockFetchReject(err: Error): void {
@@ -81,6 +74,23 @@ function mockFetchBadJson(): void {
       status: 200,
       statusText: 'OK',
       json: () => Promise.reject(new SyntaxError('Unexpected token')),
+    }),
+  );
+}
+
+function mockFetchStalledBody(): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal?.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+        },
+      });
+      return Promise.resolve(
+        new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
     }),
   );
 }
@@ -196,20 +206,22 @@ describe('RemoteJsonCatalogProvider.load()', () => {
   });
 
   describe('network errors', () => {
-    it('throws McpError wrapping a TypeError on network rejection', async () => {
+    it('throws a typed service-unavailable error on network rejection', async () => {
       mockFetchReject(new TypeError('Failed to fetch'));
       const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
       await expect(provider.load()).rejects.toMatchObject({
-        message: expect.stringContaining('Catalog fetch failed'),
+        message: expect.stringContaining('Network error during'),
       });
     });
 
-    it('error message does not leak the URL in plain message — just McpError data', async () => {
+    it('redacts URL credentials and query values from network errors', async () => {
       mockFetchReject(new TypeError('network gone'));
-      const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
+      const provider = new RemoteJsonCatalogProvider({
+        ...TEST_CONFIG,
+        catalogUrl: 'https://user:secret@test.example.com/fleet.json?api_key=secret',
+      });
       const err = await provider.load().catch((e: unknown) => e);
-      // The McpError data carries the url; the message describes the failure
-      expect(err).toMatchObject({ message: expect.stringContaining('Catalog fetch failed') });
+      expect(err).toMatchObject({ message: expect.not.stringContaining('secret') });
     });
 
     it('throws McpError on 503 Service Unavailable', async () => {
@@ -234,6 +246,16 @@ describe('RemoteJsonCatalogProvider.load()', () => {
       await expect(provider.load()).rejects.toMatchObject({
         message: expect.stringContaining('500'),
       });
+    });
+
+    it('preserves a typed timeout while reading a stalled response body', async () => {
+      mockFetchStalledBody();
+      const provider = new RemoteJsonCatalogProvider({
+        ...TEST_CONFIG,
+        catalogFetchTimeoutMs: 25,
+      });
+
+      await expect(provider.load()).rejects.toMatchObject({ code: JsonRpcErrorCode.Timeout });
     });
   });
 

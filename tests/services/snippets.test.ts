@@ -169,9 +169,9 @@ describe('remote (http) snippet payloads', () => {
     const payload = httpFor(HOSTED, 'curl')!.payload;
     expect(payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
     expect(payload).toContain('Content-Type: application/json');
-    expect(payload).toContain('MCP-Protocol-Version: 2025-11-25');
+    expect(payload).toContain('MCP-Protocol-Version: 2026-07-28');
     expect(payload).toContain('"method":"initialize"');
-    expect(payload).toContain('"protocolVersion":"2025-11-25"');
+    expect(payload).toContain('"protocolVersion":"2026-07-28"');
   });
 });
 

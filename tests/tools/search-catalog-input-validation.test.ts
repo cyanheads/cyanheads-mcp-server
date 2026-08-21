@@ -76,7 +76,6 @@ const FLEET_PAYLOAD: FleetPayload = {
 function makeIdentityEmbeddings(): IEmbeddingsRuntime {
   return {
     modelId: TEST_MODEL,
-    async initialize() {},
     async embedQuery(_text: string, dims: number) {
       // Return E0-like vector so most tests get consistent scores
       const out = new Float32Array(dims);
@@ -227,7 +226,7 @@ describe('cyanheads_search_catalog — edge cases', () => {
   });
 
   it('handles unicode query without error', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({ query: '地震データ検索' });
     const result = await searchCatalogTool.handler(input, ctx);
     expect(result.scope).toBe('tools');
@@ -236,14 +235,14 @@ describe('cyanheads_search_catalog — edge cases', () => {
   });
 
   it('handles emoji-only query without error', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({ query: '🌍🔍' });
     const result = await searchCatalogTool.handler(input, ctx);
     expect(Array.isArray(result.results)).toBe(true);
   });
 
   it('handles a query with leading and trailing whitespace', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({ query: '  seismic  ' });
     const result = await searchCatalogTool.handler(input, ctx);
     expect(Array.isArray(result.results)).toBe(true);
@@ -257,7 +256,7 @@ describe('cyanheads_search_catalog — edge cases', () => {
   });
 
   it('scope "tools" produces result entries where server field is set', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({ query: 'seismic', scope: 'tools', limit: 10 });
     const result = await searchCatalogTool.handler(input, ctx);
     for (const r of result.results) {
@@ -267,7 +266,7 @@ describe('cyanheads_search_catalog — edge cases', () => {
   });
 
   it('scope "servers" produces result entries where name equals server', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({ query: 'research', scope: 'servers', limit: 10 });
     const result = await searchCatalogTool.handler(input, ctx);
     for (const r of result.results) {
@@ -276,7 +275,7 @@ describe('cyanheads_search_catalog — edge cases', () => {
   });
 
   it('all result scores are in [0, 1] range', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: 'earthquake data',
       scope: 'tools',
@@ -323,7 +322,7 @@ describe('cyanheads_search_catalog — security', () => {
   });
 
   it('output contains no env var names from server config', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({ query: 'seismic', limit: 5 });
     const result = await searchCatalogTool.handler(input, ctx);
     const serialized = JSON.stringify(result);
@@ -334,7 +333,7 @@ describe('cyanheads_search_catalog — security', () => {
   });
 
   it('SQL/SoQL injection string in query is passed through without executing', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: "'; DROP TABLE servers; --",
     });
@@ -345,7 +344,7 @@ describe('cyanheads_search_catalog — security', () => {
   });
 
   it('script-injection string in query does not appear unescaped in result', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: '<script>alert("xss")</script>',
     });
@@ -355,7 +354,7 @@ describe('cyanheads_search_catalog — security', () => {
   });
 
   it('path traversal string in query does not throw or expose filesystem paths', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const input = searchCatalogTool.input.parse({
       query: '../../../../etc/passwd',
     });
@@ -372,7 +371,7 @@ describe('cyanheads_search_catalog — security', () => {
   });
 
   it('a long-but-permitted query still reaches the handler and is embedded', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: searchCatalogTool.errors });
     const longQuery = 'earthquake '.repeat(45).trim();
     expect(longQuery.length).toBeLessThanOrEqual(500);
     const input = searchCatalogTool.input.parse({ query: longQuery });

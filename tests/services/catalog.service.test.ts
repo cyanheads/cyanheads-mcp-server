@@ -122,15 +122,7 @@ function mockFetchOk(payload: unknown): void {
 }
 
 function mockFetchStatus(status: number, statusText: string): void {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn().mockResolvedValue({
-      ok: false,
-      status,
-      statusText,
-      json: () => Promise.reject(new Error('body not available')),
-    }),
-  );
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status, statusText })));
 }
 
 function mockFetchReject(err: Error): void {
@@ -189,7 +181,7 @@ describe('CatalogService', () => {
   describe('initialize() — failure cases', () => {
     it('throws on network rejection', async () => {
       mockFetchReject(new TypeError('Failed to fetch'));
-      await expect(service.initialize()).rejects.toThrow('Catalog fetch failed');
+      await expect(service.initialize()).rejects.toThrow('Network error during');
     });
 
     it('throws on non-2xx HTTP response', async () => {
@@ -269,8 +261,8 @@ describe('CatalogService', () => {
 
       expect(results.length).toBeGreaterThan(0);
       // E0-aligned tool (earthquake_search) should rank first.
-      expect(results[0].name).toBe('earthquake_search');
-      expect(results[0].score).toBeGreaterThan(0.9);
+      expect(results[0]!.name).toBe('earthquake_search');
+      expect(results[0]!.score).toBeGreaterThan(0.9);
       // E2-aligned tool (earthquake_get_feed) is orthogonal → filtered by floor 0.3.
       expect(results.find((r) => r.name === 'earthquake_get_feed')).toBeUndefined();
     });
@@ -287,9 +279,9 @@ describe('CatalogService', () => {
         limit: 5,
       });
 
-      expect(results[0].name).toBe('arxiv-mcp-server');
-      expect(results[0].server).toBe('arxiv-mcp-server');
-      expect(results[0].score).toBeGreaterThan(0.9);
+      expect(results[0]!.name).toBe('arxiv-mcp-server');
+      expect(results[0]!.server).toBe('arxiv-mcp-server');
+      expect(results[0]!.score).toBeGreaterThan(0.9);
     });
 
     it('returns empty when every score is below the similarity floor', async () => {
@@ -398,7 +390,7 @@ describe('CatalogService', () => {
       expect(cats).toContain('public-data');
       expect(cats).toContain('research');
       for (let i = 1; i < cats.length; i++) {
-        expect(cats[i].localeCompare(cats[i - 1])).toBeGreaterThanOrEqual(0);
+        expect(cats[i]!.localeCompare(cats[i - 1]!)).toBeGreaterThanOrEqual(0);
       }
     });
   });
