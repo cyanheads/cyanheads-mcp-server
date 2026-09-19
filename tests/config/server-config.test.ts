@@ -7,6 +7,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { getServerConfig, resetServerConfig } from '@/config/server-config.js';
 
+/**
+ * The literal text an unsubstituted `$\{VAR}` interpolation leaves behind — what
+ * a compose file or shell template writes when the variable is unset. Built from
+ * parts rather than written as a plain string so it reads as the deliberate
+ * payload it is, not a template literal someone forgot to backtick.
+ */
+function unsubstituted(name: string): string {
+  return `\${${name}}`;
+}
+
 /** Parse the config with a single env var set, isolated from the process env. */
 function parseWith(key: string, value: string) {
   resetServerConfig();
@@ -94,8 +104,33 @@ describe('server config bounds', () => {
       );
     });
 
-    it.each(['', 'not-a-url', '/fleet.json'])('rejects %s', (value) => {
+    it.each(['not-a-url', '/fleet.json'])('rejects %s', (value) => {
       expect(() => parseWith('CATALOG_URL', value)).toThrow(/CATALOG_URL/);
+    });
+
+    /**
+     * An empty string and a whole-value unsubstituted `${…}` placeholder read as
+     * unset, so a defaulted field takes its default instead of failing the URL
+     * format check. This is what a compose file interpolating an unset variable
+     * produces, and the server must still boot against the canonical fleet.
+     */
+    it.each(['', unsubstituted('CATALOG_URL')])(
+      'reads %s as unset and takes the default',
+      (value) => {
+        expect(parseWith('CATALOG_URL', value).catalogUrl).toBe(
+          'https://caseyjhand.com/fleet.json',
+        );
+      },
+    );
+
+    /**
+     * Only a whole-value placeholder reads as unset. One embedded in a larger
+     * value is kept verbatim, so an interpolation that failed mid-string
+     * surfaces as the literal it is rather than silently taking the default.
+     */
+    it('keeps a value that merely contains a placeholder', () => {
+      const embedded = `https://${unsubstituted('HOST')}/fleet.json`;
+      expect(parseWith('CATALOG_URL', embedded).catalogUrl).toBe(embedded);
     });
   });
 
@@ -106,8 +141,13 @@ describe('server config bounds', () => {
       );
     });
 
-    it('rejects an empty value', () => {
-      expect(() => parseWith('EMBEDDING_MODEL_ID', '')).toThrow(/EMBEDDING_MODEL_ID/);
-    });
+    it.each(['', unsubstituted('EMBEDDING_MODEL_ID')])(
+      'reads %s as unset and takes the default',
+      (value) => {
+        expect(parseWith('EMBEDDING_MODEL_ID', value).embeddingModelId).toBe(
+          'Snowflake/snowflake-arctic-embed-m-v1.5',
+        );
+      },
+    );
   });
 });
