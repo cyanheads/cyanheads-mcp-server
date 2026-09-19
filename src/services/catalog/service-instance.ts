@@ -23,7 +23,7 @@ export function getCatalogService(): ICatalogService {
   if (!_service) {
     throw serviceUnavailable(
       'CatalogService not initialized — call initCatalogService() in setup()',
-      { reason: 'catalog_empty' },
+      { reason: 'catalog_empty', retryable: true },
     );
   }
   return _service;

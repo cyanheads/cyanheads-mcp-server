@@ -133,6 +133,10 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       when: 'Catalog has not finished loading.',
       recovery: 'Retry in a few seconds; the catalog is still loading.',
       retryable: true,
+      // Raised below the handler: getCatalogService() and CatalogService's own
+      // _assertInitialized() both throw serviceUnavailable with this reason, so
+      // no ctx.fail site here names it.
+      thrownBy: 'service',
     },
   ],
 

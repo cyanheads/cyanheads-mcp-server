@@ -5,6 +5,7 @@
  * @module tests/services/catalog.service.test
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CatalogService } from '@/services/catalog/catalog-service.js';
 import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
@@ -480,6 +481,71 @@ describe('CatalogService', () => {
   describe('uninitialized state', () => {
     it('throws serviceUnavailable before initialize() is called', () => {
       expect(() => service.getTool('foo')).toThrow();
+    });
+
+    /**
+     * Both tools advertise `catalog_empty` as retryable. The framework renders
+     * `data.retryable` into the `content[]` trailer, so the throw itself has to
+     * carry it — the declared `errors[]` entry alone never reaches the wire.
+     */
+    it.each(['getTool', 'getServer', 'listCategories', 'stats'] as const)(
+      '%s() throws catalog_empty marked retryable',
+      (method) => {
+        let thrown: unknown;
+        try {
+          (service[method] as (name?: string) => unknown)('foo');
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toMatchObject({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: { reason: 'catalog_empty', retryable: true },
+        });
+      },
+    );
+
+    it('search() rejects with the same retryable catalog_empty contract', async () => {
+      await expect(service.search({ query: 'anything', scope: 'tools' })).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        data: { reason: 'catalog_empty', retryable: true },
+      });
+    });
+  });
+
+  describe('shutdown()', () => {
+    /**
+     * `createApp({ teardown })` calls this on every shutdown path. If the
+     * interval survived, the process would keep a ref'd handle the framework
+     * cuts rather than releases.
+     */
+    it('stops the background refresh timer', async () => {
+      vi.useFakeTimers();
+      service.shutdown();
+      service = new CatalogService(
+        { ...TEST_CONFIG, catalogRefreshSeconds: 1 },
+        makeMockEmbeddings({}),
+      );
+
+      mockFetchOk(MINIMAL_PAYLOAD);
+      await service.initialize();
+
+      service.shutdown();
+
+      mockFetchOk({ ...MINIMAL_PAYLOAD, generatedAt: '2026-05-29T00:00:00Z', servers: [] });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // The swap never ran: the timer was cleared, not merely skipped.
+      expect(service.stats().serverCount).toBe(2);
+      vi.useRealTimers();
+    });
+
+    it('is idempotent', async () => {
+      mockFetchOk(MINIMAL_PAYLOAD);
+      await service.initialize();
+      expect(() => {
+        service.shutdown();
+        service.shutdown();
+      }).not.toThrow();
     });
   });
 

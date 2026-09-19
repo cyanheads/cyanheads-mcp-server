@@ -307,8 +307,15 @@ export class CatalogService implements ICatalogService {
 
   private _assertInitialized(): CatalogIndex {
     if (!this._index) {
+      /**
+       * `retryable` rides the error data, not just the tools' declared
+       * `errors[]` entry: the framework renders `data.retryable` into the
+       * `content[]` trailer and clients branch on it there. Both tools
+       * advertise this reason as retryable, so the throw has to say so.
+       */
       throw serviceUnavailable('CatalogService not initialized — call initialize() in setup()', {
         reason: 'catalog_empty',
+        retryable: true,
       });
     }
     return this._index;
