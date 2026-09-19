@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cyanheads-mcp-server",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
   "author": {
     "name": "cyanheads",

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-09-19
+
+Adopts mcp-ts-core 0.13's session-mode API and InvalidParams argument-rejection envelope; MCP_SESSION_MODE now defaults to stateless everywhere, and catalog_empty errors correctly advertise retryable.
+
 ## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-08-21
 
 mcp-ts-core 0.12.3 adoption and expanded test coverage
