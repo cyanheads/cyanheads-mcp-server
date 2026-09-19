@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -27,65 +27,56 @@
 
 ---
 
-## Tools
+## Overview
 
-Two tools, semantic ranking, hosted catalog. The catalog itself lives at [`caseyjhand.com/fleet.json`](https://caseyjhand.com/fleet.json) — a single JSON file with baked embeddings, regenerated when servers are added or updated. This server polls it hourly and serves search out of an in-memory vector index.
+Fleet discovery for the cyanheads MCP ecosystem, built on a hosted `fleet.json` catalog of pre-computed tool and server embeddings. Search the catalog by natural-language query, or resolve a known tool or server name to its description, connection URL, and per-client install snippet. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:---|:---|
 | `cyanheads_search_catalog` | Search fleet tools and servers by natural-language query. Returns ranked matches with brief summaries and the owning server. |
-| `cyanheads_describe_entry` | Return the connection URL and per-client install snippets for a named tool or server. |
+| `cyanheads_describe_entry` | Return the description, connection URL, and per-client install snippet for a named tool or server. |
 
-### `cyanheads_search_catalog`
+## Capability reference
 
-Semantic search across the fleet. Embeds the query with [Snowflake Arctic Embed M v1.5](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) (Matryoshka-truncated to 256 dimensions) and computes cosine similarity against the catalog's pre-computed document vectors.
+### `cyanheads_search_catalog` <sub>tool</sub>
 
-- `query` accepts 1-500 characters
-- `scope: "tools"` (default) returns individual tool matches; `scope: "servers"` returns server-level matches
-- `category` filter narrows to one of `research`, `government`, `public-data`, `utility`
-- Configurable `limit` (1-20, default 5) and a server-side `SIMILARITY_FLOOR` threshold drop low-confidence hits
-- Returns `score` (cosine similarity in [0, 1]) on every result for trust calibration
-- `totalCount` reports the count above the floor before the limit was applied
+- `query` 1–500 characters; `scope` selects `tools` (default) or `servers` result granularity
+- Optional `category` filter: `research`, `government`, `public-data`, `utility`
+- `limit` 1–20 (default 5); results below the `SIMILARITY_FLOOR` (default `0.3`) are dropped before the limit applies
+- Every result carries `score` (cosine similarity, `[0, 1]`), comparable only within one response
+- For scope `tools`, a `servers` roll-up (top 10 by best-matching tool, `serversTotal` for the full count) summarizes which servers matched
+- Throws retryable `catalog_empty` while the catalog is still loading
 
 ---
 
-### `cyanheads_describe_entry`
+### `cyanheads_describe_entry` <sub>tool</sub>
 
-Resolve a name to its install instructions. Accepts either a tool name (snake_case, e.g. `earthquake_search`) or a server name (kebab-case, e.g. `earthquake-mcp-server`), up to 64 characters — auto-detected from the format, or pinned via the `kind` parameter.
-
-- For tools: returns the description and the owning server name
-- For servers: returns description, version, npm package, GitHub URL, the full tool list (each tool's name and description), and per-client install snippets — **local (stdio, via `npx`) for every server, plus remote (Streamable HTTP) when a hosted endpoint exists**
-- Each snippet carries a `transport` (`stdio` or `http`); env vars a local install needs are surfaced and scaffolded into the JSON configs
-- `client` filter narrows snippets to one of `claude-code`, `codex`, `cursor`, `gemini`, `streamable-http`, `curl`; omit to return every client
-- Discriminated output on `kind` — callers branch on data, not string parsing
+- `name` 1–64 characters; accepts a snake_case tool name or kebab-case server name, auto-detected or pinned via `kind`
+- Tool lookups return the description and owning server; server lookups return version, npm package, GitHub URL, the full tool list, and per-client install snippets
+- `client` filters snippets to one of `claude-code`, `codex`, `cursor`, `gemini`, `streamable-http`, `curl`; omit for every client
+- Local (stdio, via `npx`) snippets are returned for every published server; remote (Streamable HTTP) snippets are added only when a hosted endpoint exists
+- Discriminated on `kind` (`tool` | `server`) so callers branch on data, not string parsing
+- Throws `not_found` (unknown name), `ambiguous_kind` (name matches both a tool and a server — pass `kind` to disambiguate), or retryable `catalog_empty`
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core):
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
-- Declarative tool definitions — single file per tool, framework handles registration and validation
-- Unified error handling with typed error contracts and recovery hints
-- Pluggable auth (`none`, `jwt`, `oauth`)
-- Structured logging with optional OpenTelemetry tracing
-- Runs locally over stdio or HTTP, with a hosted Streamable HTTP endpoint
+Catalog-specific:
 
-Fleet-specific:
+- Hourly background catalog refresh (`CATALOG_REFRESH_SECONDS`, default `3600`) with an atomic index swap when `generatedAt` changes — no restart needed
+- Query embeddings are computed at request time via `@huggingface/transformers`; document embeddings are pre-computed, L2-normalized, and Matryoshka-truncated, shipped inside `fleet.json`
+- The embedding model is warmed up during startup, before OpenTelemetry's HTTP instrumentation patches `fetch` — avoids a cold-cache model-load failure under OTEL
+- Self-describing: `cyanheads_describe_entry` resolves this server's own name and tools from a static fallback record, consulted only when the remote catalog doesn't carry an entry for it
+- `CATALOG_URL` can point at any endpoint serving the same schema, to front a custom fleet
 
-- Hourly background catalog refresh with atomic swap on `generatedAt` change — no restart needed when the fleet updates
-- L2-normalized 256-dim Matryoshka-truncated vectors keep memory under 100KB for a 40-server fleet
-- Per-client install snippet generation at describe-time, not catalog-generation time — both local (stdio `npx`) and remote (Streamable HTTP) transports, kept in sync with the deployed endpoint
-- Discriminated `result.kind` and typed `installSnippets[].client` / `installSnippets[].transport` enums — agents can branch reliably
+Agent-friendly output:
 
-## What's in the fleet
-
-100+ MCP servers spanning four categories. Each is open source and individually addressable — `cyanheads_describe_entry` returns its direct connection URL alongside the install snippet. It also describes this server: ask for `cyanheads-mcp-server` and you get the front door's own endpoint and install snippets.
-
-| Category | Examples |
-|:--|:--|
-| **Research** | arXiv, bioRxiv, ORCID, Crossref, Wikipedia, Wikidata, OpenLibrary |
-| **Government** | OpenStates, USAspending, CourtListener, NIST NVD, Library of Congress |
-| **Public Data** | Earthquake (USGS), NOAA Weather, GBIF Biodiversity, World Bank, WHO, Eurostat |
-| **Utility** | OpenStreetMap geocoding, Reference Data (constants, timezones, units), WSDOT |
+- Search responses echo the effective query, report the total match count before the limit, and include broadening guidance when nothing matches
+- Discriminated `result.kind` (`tool` | `server`) on `cyanheads_describe_entry` lets callers branch on data, not string parsing
+- Every search result carries a `score` field for trust calibration, plus a `servers` roll-up so agents can see which servers matched without a second call
 
 ## Getting started
 
@@ -171,7 +162,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 
 ### Installation
 
@@ -193,6 +184,13 @@ cd cyanheads-mcp-server
 bun install
 ```
 
+4. **Configure environment:**
+
+```sh
+cp .env.example .env
+# edit .env to override any defaults
+```
+
 ## Configuration
 
 All configuration is validated at startup via Zod schemas in `src/config/server-config.ts`. Every variable has a sensible default — out of the box, the server points at the canonical cyanheads fleet.
@@ -204,6 +202,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_HTTP_HOST` | HTTP server bind host | `127.0.0.1` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path where the MCP server is mounted | `/mcp` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
+| `MCP_SESSION_MODE` | HTTP session posture: `auto`, `stateful`, or `stateless`. `src/index.ts` declares `stateless`; set this only to override it. | `stateless` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
 | `CATALOG_URL` | Remote fleet.json endpoint (schema v2 with baked embeddings). Must be an absolute URL. Override to front your own fleet. | `https://caseyjhand.com/fleet.json` |
 | `CATALOG_FETCH_TIMEOUT_MS` | Per-request timeout for fleet.json fetches in ms. Must be > 0. | `10000` |
@@ -212,13 +211,13 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search_catalog` results. Must be within `[0, 1]`. | `0.3` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 
-To point at a different catalog, change `CATALOG_URL` to your own hosted JSON file. See [`docs/design.md`](./docs/design.md) for the producer-side script and schema.
+See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ## Running the server
 
 ### Local development
 
-- **Build and run the production version**:
+- **Build and run the production version:**
 
   ```sh
   # One-time build
@@ -230,11 +229,21 @@ To point at a different catalog, change `CATALOG_URL` to your own hosted JSON fi
   bun run start:stdio
   ```
 
-- **Run checks and tests**:
+- **Run checks and tests:**
+
   ```sh
   bun run devcheck  # Lints, formats, type-checks, runs MCP and packaging linters
   bun run test      # Runs the test suite
   ```
+
+### Docker
+
+```sh
+docker build -t cyanheads-mcp-server .
+docker run --rm -p 3010:3010 cyanheads-mcp-server
+```
+
+The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/cyanheads-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -253,10 +262,11 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for logging, `ctx.state` for storage
 - Register new tools in the `tools` array passed to `createApp()` in `src/index.ts`
+- Wrap external data: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
@@ -265,4 +275,4 @@ bun run test
 
 ## License
 
-This project is licensed under the Apache 2.0 License. See the [LICENSE](./LICENSE) file for details.
+Apache-2.0 — see [LICENSE](LICENSE) for details.

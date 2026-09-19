@@ -14,6 +14,16 @@ import { getCatalogService } from './services/catalog/service-instance.js';
 await createApp({
   name: 'cyanheads-mcp-server',
   title: 'cyanheads-mcp-server',
+  /**
+   * No per-session state: the catalog index is process-wide and `ctx.state` is
+   * tenant-scoped, so the session store and the per-session `McpServer` buy
+   * nothing here and cost horizontal scalability. `MCP_SESSION_MODE` still wins
+   * when a deployment sets it to a meaningful value; the Dockerfile's
+   * `ENV MCP_SESSION_MODE="stateless"` now restates this rather than overriding
+   * a different default. No tool calls `ctx.requestInput`, so `require` is not
+   * declared — nothing here degrades under stateless.
+   */
+  sessionMode: 'stateless',
   tools: [searchCatalogTool, describeEntryTool],
   resources: [],
   prompts: [],
@@ -28,5 +38,15 @@ await createApp({
     const config = getServerConfig();
     initCatalogService(config);
     await getCatalogService().initialize();
+  },
+
+  /**
+   * `setup()` arms a ref'd `setInterval` for the background catalog refresh.
+   * Nothing else clears it, so without this hook a signal shutdown cuts the
+   * timer rather than releasing it. Runs after the transport stops accepting
+   * requests and before core services are disposed.
+   */
+  teardown() {
+    getCatalogService().shutdown();
   },
 });
