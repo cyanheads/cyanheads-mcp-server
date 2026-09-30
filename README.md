@@ -7,13 +7,13 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-%3E=1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.1.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
 <div align="center">
 
-[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/cyanheads-mcp-server/releases/latest/download/cyanheads-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=cyanheads-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvY3lhbmhlYWRzLW1jcC1zZXJ2ZXIiXX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22cyanheads-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads/cyanheads-mcp-server%22%5D%7D)
+[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/cyanheads-mcp-server/releases/latest/download/cyanheads-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=cyanheads-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvY3lhbmhlYWRzLW1jcC1zZXJ2ZXIiXX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22cyanheads-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Fcyanheads-mcp-server%22%5D%7D)
 
 [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-67E8F9?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
@@ -42,23 +42,19 @@ Fleet discovery for the cyanheads MCP ecosystem, built on a hosted `fleet.json` 
 
 ### `cyanheads_search_catalog` <sub>tool</sub>
 
-- `query` 1–500 characters; `scope` selects `tools` (default) or `servers` result granularity
-- Optional `category` filter: `research`, `government`, `public-data`, `utility`
-- `limit` 1–20 (default 5); results below the `SIMILARITY_FLOOR` (default `0.3`) are dropped before the limit applies
-- Every result carries `score` (cosine similarity, `[0, 1]`), comparable only within one response
-- For scope `tools`, a `servers` roll-up (top 10 by best-matching tool, `serversTotal` for the full count) summarizes which servers matched
-- Throws retryable `catalog_empty` while the catalog is still loading
+- `query` 1–500 raw characters, with non-whitespace text required; surrounding whitespace is trimmed before embedding and echo. `scope` selects `tools` (default) or `servers`; optional `category`: `research`, `government`, `public-data`, `utility`; `limit` 1–20 (default 5).
+- Results carry cosine-similarity `score` (`[0, 1]`, comparable within one response). Tool searches include a `servers` roll-up with ten entries per page and `serversTotal`; an unloaded catalog returns retryable `catalog_empty`.
+- Page results with `offset` and the tools-scope roll-up independently with `serversOffset` (both default to 0). Reuse the same query, scope, category, and limit with `nextOffset` / `nextServersOffset`; null means exhausted. Each call uses the current catalog, so a refresh between pages can change ordering. Servers scope requires `serversOffset: 0` and omits roll-up fields.
+- `SIMILARITY_FLOOR` (default `0.3`) filters matches before the limit applies.
 
 ---
 
 ### `cyanheads_describe_entry` <sub>tool</sub>
 
-- `name` 1–64 characters; accepts a snake_case tool name or kebab-case server name, auto-detected or pinned via `kind`
-- Tool lookups return the description and owning server; server lookups return version, npm package, GitHub URL, the full tool list, and per-client install snippets
-- `client` filters snippets to one of `claude-code`, `codex`, `cursor`, `gemini`, `streamable-http`, `curl`; omit for every client
-- Local (stdio, via `npx`) snippets are returned for every published server; remote (Streamable HTTP) snippets are added only when a hosted endpoint exists
-- Discriminated on `kind` (`tool` | `server`) so callers branch on data, not string parsing
-- Throws `not_found` (unknown name), `ambiguous_kind` (name matches both a tool and a server — pass `kind` to disambiguate), or retryable `catalog_empty`
+- `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. Exact names win, then unique case-insensitive names; output uses canonical names. `client` optionally selects `claude-code`, `codex`, `cursor`, `gemini`, `streamable-http`, or `curl`.
+- Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets.
+- Descriptions are catalog text; obtain tool schemas from the connected server's `tools/list`.
+- Failures return `not_found`, `ambiguous_kind` (set `kind`), or retryable `catalog_empty`.
 
 ## Features
 
@@ -67,6 +63,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 Catalog-specific:
 
 - Hourly background catalog refresh (`CATALOG_REFRESH_SECONDS`, default `3600`) with an atomic index swap when `generatedAt` changes — no restart needed
+- Empty catalogs and conflicting duplicate identities fail before index replacement; refresh retains the last valid catalog. Identical duplicates collapse before indexing, with a bounded load-time warning; servers with no tools remain valid.
 - Query embeddings are computed at request time via `@huggingface/transformers`; document embeddings are pre-computed, L2-normalized, and Matryoshka-truncated, shipped inside `fleet.json`
 - The embedding model is warmed up during startup, before OpenTelemetry's HTTP instrumentation patches `fetch` — avoids a cold-cache model-load failure under OTEL
 - Self-describing: `cyanheads_describe_entry` resolves this server's own name and tools from a static fallback record, consulted only when the remote catalog doesn't carry an entry for it
@@ -210,6 +207,10 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `EMBEDDING_MODEL_ID` | Hugging Face model id for query embedding. Must match `fleet.json.embeddingModel`. | `Snowflake/snowflake-arctic-embed-m-v1.5` |
 | `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search_catalog` results. Must be within `[0, 1]`. | `0.3` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP base URL for traces and metrics | Unset |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Explicit OTLP logs URL; requires the OTel log peers included in the default Docker build | Unset |
+| `LOG_TOOL_FAILURE_PAYLOADS` | Log failed arguments and results, redacted by key name. Secrets inside free-form values are not redacted. | `false` |
+| `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` | UTF-8 byte cap for each logged failure payload | `16384` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
 

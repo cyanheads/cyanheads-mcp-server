@@ -6,7 +6,7 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `cyanheads_search_catalog` | Semantic search across fleet tools and servers. Returns ranked matches with brief summaries and the server each tool belongs to. | `query`, `scope`, `category`, `limit` | `readOnlyHint: true`, `openWorldHint: false` |
+| `cyanheads_search_catalog` | Semantic search across fleet tools and servers. Returns ranked matches with brief summaries and the server each tool belongs to. | `query`, `scope`, `category`, `limit`, `offset`, `serversOffset` | `readOnlyHint: true`, `openWorldHint: false` |
 | `cyanheads_describe_entry` | Description, tool list, connection URL, and per-client install snippets for a named tool or server. | `name`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
 | `cyanheads_invoke` *(Phase 2)* | Passthrough dispatch to a fleet backend. Deferred. | — | — |
 
@@ -22,7 +22,7 @@ None.
 
 ## Overview
 
-`cyanheads-mcp-server` is a meta-server that fronts the cyanheads hosted MCP fleet. An agent connecting to one endpoint (`https://cyanheads.caseyjhand.com/mcp`) sees two tools — `cyanheads_search_catalog` and `cyanheads_describe_entry` — and uses them to discover and learn how to install any of the hosted servers in their own client.
+`cyanheads-mcp-server` is a discovery server for the cyanheads MCP fleet. An agent connecting to one endpoint (`https://cyanheads.caseyjhand.com/mcp`) sees two tools — `cyanheads_search_catalog` and `cyanheads_describe_entry` — and uses them to discover and install cataloged hosted and local-only servers in their own client.
 
 **Primary use case.** A user adds `cyanheads.caseyjhand.com/mcp` to their MCP client. From then on, their agent can answer "what server handles X?" via semantic search, and "how do I add that server to my client?" via per-client install snippets — without the user maintaining a sprawling local MCP config.
 
@@ -69,7 +69,7 @@ The single most important property: **document embeddings are produced once, at 
 | Runtime | `@huggingface/transformers` v4+ (ONNX via WebGPU/CPU) |
 | Source | [Snowflake/snowflake-arctic-embed-m-v1.5 on HF](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) |
 
-Matryoshka truncation to 256 dims preserves ~99% of full-768 quality per Snowflake's published evaluation, while keeping the inlined fleet.json size in the ~400KB range (367 docs × 256 floats × ~6 chars per number).
+Matryoshka truncation to 256 dims preserves ~99% of full-768 quality per Snowflake's published evaluation and stores one-third as many vector components per catalog entry.
 
 ### Build-time pipeline (portfolio)
 
@@ -90,24 +90,24 @@ caseyjhand-portfolio/scripts/build-fleet-json.ts
      - Per-tool: existing metadata + embedding: number[256]
 ```
 
-Build cost: ~30-60s for ~367 documents on CPU including model load. Acceptable for a build that ships once per portfolio deploy.
+Document embeddings are recomputed during portfolio deployment; cost grows with catalog size and depends on the model cache.
 
 ### Runtime pipeline (server)
 
 ```
 cyanheads-mcp-server startup:
   1. Fetch fleet.json from CATALOG_URL
-  2. Validate top-level schema (Zod). Verify embeddingModel matches expected. Refuse to load on mismatch.
+  2. Validate schema (Zod), including a nonempty servers array. Normalize identical exact-identity duplicates, then verify embeddingModel matches expected. Refuse to load on conflicts or mismatch.
   3. Pack vectors as a single Float32Array of length (numDocs × 256) for cache locality
-  4. Build index: tool name → row offset; server name → row offset; row offset → metadata
+  4. Build exact and unique case-insensitive name lookups alongside vector rows and metadata
   5. Load @huggingface/transformers with the same model id
   6. Start poll timer: every CATALOG_REFRESH_SECONDS, re-fetch; if generatedAt changed, swap in new vectors atomically
 
 cyanheads_search_catalog handler:
-  1. Prepend query prefix → embed query → truncate to 256 → normalize
-  2. Dot product against every row in the packed Float32Array (1 µs per row, ~0.4ms total for 367 rows)
+  1. Validate the 500-character raw ceiling and non-whitespace content, trim → prepend query prefix → embed query → truncate to 256 → normalize
+  2. Dot product against every row in the packed Float32Array
   3. Filter by category if requested
-  4. Sort descending, take top N
+  4. Sort descending with name tie-breaks, slice ranked results by offset/limit; independently slice the full-match server roll-up by serversOffset (cap 10)
   5. Return with score = cosine similarity (0-1 range)
 ```
 
@@ -190,6 +190,8 @@ Two transports per server, generated at describe time:
 
 A hosted server yields 11 snippets (5 stdio + 6 http); a local-only server yields 5 (stdio only). Required env vars (`record.requiredEnvVars`) are scaffolded as empty-valued `env` keys in the JSON configs so the caller knows what to set; CLI snippets stay bare. Each snippet carries a `transport` field, and `cyanheads_describe_entry` groups them into "Local install" and "Remote install" sections.
 
+Tool descriptions carry the same owning-server connection metadata and client-filtered snippets as server descriptions. A requested `curl` client on a local-only entry still returns successful metadata, with `installSnippets: []` and an `installNotice` explaining the HTTP requirement and naming `codex` for the next describe call. Required environment variables render independently of snippet availability.
+
 ### Registry location
 
 `src/services/catalog/snippets.ts` — two factory lists (`STDIO_FACTORIES`, `HTTP_FACTORIES`); `buildAllSnippets(record)` returns every stdio snippet plus the http snippets when `record.endpoint` is present.
@@ -227,8 +229,8 @@ curl:             curl -X POST ${endpoint} ... (initialize probe)
 
 ```ts
 z.object({
-  query: z.string().min(1).max(500).describe(
-    'Natural language search query. Describe what you want to accomplish, a workflow, or a capability area. 1-500 characters.'
+  query: z.string().min(1).max(500).regex(/\S/u).describe(
+    'Natural language search query. 1-500 raw characters; non-whitespace text required. Trimmed before embedding and echo.'
   ),
   scope: z.enum(['tools', 'servers']).default('tools').describe(
     'What to search. "tools" returns individual tool matches; "servers" returns server-level matches.'
@@ -239,6 +241,8 @@ z.object({
   limit: z.number().int().min(1).max(20).default(5).describe(
     'Maximum number of results to return (1-20). Default 5.'
   ),
+  offset: z.number().int().min(0).default(0).describe('Ranked-result offset; use nextOffset to continue.'),
+  serversOffset: z.number().int().min(0).default(0).describe('Independent roll-up offset, 10 per page; must be zero in servers scope.'),
 })
 ```
 
@@ -246,6 +250,10 @@ z.object({
 
 ```ts
 z.object({
+  offset: z.number().describe('Current result offset.'),
+  nextOffset: z.number().nullable().describe('Next result offset or null when exhausted.'),
+  serversOffset: z.number().optional().describe('Current roll-up offset; tools scope only.'),
+  nextServersOffset: z.number().nullable().optional().describe('Next roll-up offset or null when exhausted; tools scope only.'),
   results: z.array(z.object({
     name: z.string().describe(
       'Tool name (snake_case) or server name (kebab-case) depending on scope.'
@@ -285,20 +293,24 @@ z.object({
 enrichment: {
   effectiveQuery: z.string().describe('The query that was searched.'),
   totalCount: z.number().describe('Total relevant matches before the limit was applied.'),
-  notice: z.string().optional().describe('Guidance when no results matched.'),
+  notice: z.string().optional().describe('Guidance for zero matches or an exhausted result page.'),
 }
 ```
 
 **Notes:**
 - No `phase` field. Output shape is stable; score is always cosine similarity.
 - `totalCount` reflects the post-threshold count. A configurable minimum similarity (default `SIMILARITY_FLOOR=0.3`) suppresses noise from cold queries; results below the floor don't appear in `results` or `totalCount`.
-- The `servers` roll-up is present only for `scope: 'tools'`, ordered by `topScore` descending (name-tiebroken) and capped at 10; `serversTotal` carries the true distinct count.
+- The `servers` roll-up is present only for `scope: 'tools'`, ordered by `topScore` descending (name-tiebroken) and capped at 10 per page; `serversTotal` carries the true distinct count. `matchedTools` and `topScore` come from the full tool match set, independently of both offsets and the result limit.
+- `offset` and `serversOffset` default to zero and advance independently through nullable `nextOffset` and `nextServersOffset`. Continue with the same query, scope, category, and limit. Pages use the current catalog; a refresh can change ordering. Beyond-end offsets return empty pages with the full totals and null continuation. Servers scope omits every roll-up field and rejects a nonzero `serversOffset`.
 - Zero matches are a successful empty response — `results: []` plus a `notice` on how to broaden the search — not an error.
 
 **Error contract:**
 
 ```ts
 errors: [
+  { reason: 'invalid_servers_offset', code: JsonRpcErrorCode.ValidationError,
+    when: 'Nonzero serversOffset in servers scope.',
+    recovery: 'Set serversOffset to zero in servers scope; use offset to page server results.' },
   { reason: 'catalog_empty', code: JsonRpcErrorCode.ServiceUnavailable,
     when: 'Catalog has not finished loading.',
     recovery: 'Retry in a few seconds; the catalog is still loading.',
@@ -306,20 +318,20 @@ errors: [
 ]
 ```
 
-**`format()` parity:** renders `scope`, each result's `name`, `server`, `brief`, `category`, `score`, and the `servers` roll-up. Lint-enforced.
+**`format()` parity:** renders `scope`, offsets and continuation, each result's `name`, `server`, `brief`, `category`, `score`, and the `servers` roll-up. Both tool formatters preserve catalog descriptions as literal text in delimiter-sized framework code blocks. Single-line identifiers use delimiter-sized code spans; multiline metadata and snippet payloads use code blocks. Structured values remain verbatim.
 
 **Auth:** none in v0. Scope `tool:cyanheads_search_catalog:read` if/when auth is enabled.
 
 ### `cyanheads_describe_entry`
 
-**Description:** Return the description, connection URL, and per-client install snippets for a named tool or server. For tools: the description and the server it belongs to. For servers: the full tool list (each tool's name and description), connection URL, and install snippets for every supported client (or one specific client when `client` is specified). Call `cyanheads_search_catalog` first to find valid names.
+**Description:** Return descriptions, connection metadata, and per-client install snippets for a named tool or server. Tool entries include the owning server; server entries also include the full tool inventory. Both kinds carry `npm`, `github`, optional `endpoint`, `auth`, optional `requiredEnvVars`, `installSnippets`, and optional `installNotice`. Call `cyanheads_search_catalog` first to find valid names. Catalog entries contain descriptions; tool schemas come from the connected server's `tools/list`.
 
 **Input schema:**
 
 ```ts
 z.object({
   name: z.string().min(1).max(64).describe(
-    'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters.'
+    'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names.'
   ),
   kind: z.enum(['tool', 'server']).optional().describe(
     'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
@@ -348,6 +360,8 @@ None. The catalog has no stable per-record URI worth bookmarking, and a `fleet:/
 
 Owns the in-memory catalog and search.
 
+The provider collapses identical exact-case tool duplicates within each server, then identical server records after tool normalization, keeping the first in payload order. Conflicting descriptions, metadata, or vectors reject the payload before index replacement. A bounded load-time warning reports collapsed identities. Distinct case variants and identical tool spellings under different owners remain distinct inventory rows. This keeps search, descriptions, counts, and packed vectors consistent while accepting catalogs with harmless repeated records. Empty server arrays fail validation; zero-tool servers remain valid. A failed refresh retains the prior records, vectors, counts, and initialization timestamp.
+
 ```ts
 interface ICatalogService {
   /** Fetch fleet.json, validate, build vector index, load embedding model. */
@@ -358,12 +372,13 @@ interface ICatalogService {
     query: string;
     scope: 'tools' | 'servers';
     category?: CatalogCategory;
-    limit: number;
+    limit?: number;
   }): Promise<CatalogSearchResult[]>;
 
   /**
-   * Exact lookup. Both consult the remote index first, then fall back to the
-   * static self record for `cyanheads-mcp-server` and its own tools.
+   * Exact remote lookup first, then a unique case-insensitive remote match.
+   * Ambiguous folds return null; only no remote candidate reaches the static
+   * self record for `cyanheads-mcp-server` and its own tools. Output is canonical.
    */
   getTool(name: string): CatalogTool & { serverRecord: CatalogRecord } | null;
   getServer(name: string): CatalogRecord | null;
@@ -407,7 +422,7 @@ The runtime is shared between the catalog initialization sanity-check (verifies 
 
 ### `RemoteJsonCatalogProvider`
 
-Unchanged from the pre-pivot version — fetches `CATALOG_URL`, validates with Zod, returns the payload. The Zod schema now requires the v2 fields (`embeddingModel`, `embeddingDims`, `embeddingQueryPrefix`, per-record `embedding`).
+Fetches `CATALOG_URL`, validates the v2 payload with Zod, and requires a nonempty server array. Identical exact-name duplicates collapse after nested tool normalization; conflicting records fail before the service replaces its index. The service checks the model and vector dimensions and owns the cached index.
 
 ---
 
@@ -440,7 +455,7 @@ v0 ships as `MCP_AUTH_MODE=none`. The hosted endpoint is a public discovery surf
 | Embedding production | Portfolio build script, `@huggingface/transformers` | Document vectors baked into fleet.json. Build container is CPU; model weights cached between builds where possible. |
 | Catalog in server | In-memory Float32Array (packed) + Maps for name lookup | One fetch at startup, polled every hour. Atomic swap on change. |
 | Query embedding | `@huggingface/transformers` loaded once at startup | CPU inference, ~30-50ms per query on the VPS. |
-| Search | In-memory dot product over ~367 normalized vectors | Sub-millisecond for the full sweep. |
+| Search | In-memory dot product over normalized catalog vectors | Linear in catalog row count and embedding dimensions. |
 | Persistence | None | No `ctx.state`. Stateless aside from the cached catalog. |
 
 No Cloudflare Workers, Vectorize, KV, D1, or Durable Objects. The server runs on the same VPS as the rest of the cyanheads fleet.
@@ -492,7 +507,7 @@ Phase 2 is the only place `invoke` lands. Phase 1 does not register it.
 3. Replace token-overlap logic in `src/services/catalog/catalog-service.ts` with packed Float32Array + cosine search; add startup model load + background poll.
 4. Add `src/services/catalog/embeddings-runtime.ts` — query embed pipeline.
 5. Update `src/mcp-server/tools/definitions/search-catalog.tool.ts` — drop `phase`, drop fulltext path, score becomes float.
-6. `src/mcp-server/tools/definitions/describe-entry.tool.ts` — no structural change.
+6. `src/mcp-server/tools/definitions/describe-entry.tool.ts` — resolve canonical names and return connection metadata and client-filtered install snippets for tools and servers.
 7. Update `src/config/server-config.ts` — add `EMBEDDING_MODEL_ID`, `SIMILARITY_FLOOR`, `CATALOG_REFRESH_SECONDS`; drop unused vars.
 8. Update tests in `tests/services/catalog.service.test.ts` and `tests/tools/search-catalog.tool.test.ts` to use embedding fixtures.
 9. Rewrite README in marketing-style positioning.
@@ -515,7 +530,7 @@ Portfolio side:
 
 - **Matryoshka 256 dims, not 768.** Snowflake's v1.5 training was designed for compressible truncation; published evaluation shows ~99% of full-dim retrieval quality at 256. The storage win is ~3x on the fleet.json side. Upgrade to 768 is a single constant change in the build script if quality ever bottlenecks.
 
-- **Embeddings live in fleet.json, not in a vector DB.** For 367 documents, an in-memory dot product sweep is sub-millisecond. A separate vector DB introduces a moving part (provisioning, refresh latency, schema sync) for no measurable benefit. The fleet.json is already the canonical catalog artifact; piggybacking embeddings onto it makes them version-controlled with the metadata and eliminates any race between catalog updates and vector updates.
+- **Embeddings live in fleet.json.** An in-memory dot product sweep avoids a separate vector service and its provisioning, refresh latency, and schema synchronization. Shipping vectors with the metadata lets the server replace them together.
 
 - **Document embeddings produced at portfolio build time, query embeddings at runtime.** Documents change rarely (per portfolio deploy) and are known at build time. Queries change every request and must be live. The split puts each inference at the right layer.
 
@@ -529,9 +544,9 @@ Portfolio side:
 
 - **README is marketing-shaped.** The hosted endpoint is the product. The README's job is to convince an evaluator the endpoint is worth one line in their client config. Self-hosting docs collapse to a bottom section.
 
-- **Catalog is hosted-only.** All entries in fleet.json come from the live `GET /mcp` + `tools/list` calls during the portfolio build. Non-hosted servers (npm-only utilities) are excluded from v0. Including them requires a parallel data source and is deferred. *(Update: the server-side schema now models local-only servers — `endpoint` is optional and `cyanheads_describe_entry` renders stdio snippets for every record. The remaining work to actually list npm-only servers is the portfolio ingestion path.)*
+- **The catalog supports hosted and local-only servers.** An optional `endpoint` controls HTTP snippets; the npm package supplies local stdio snippets. Endpoint-less entries such as `mailchimp-mcp-server` expose their required environment variables alongside install guidance.
 
-- **This server describes itself from a local fallback record, not the remote catalog.** The portfolio's build sweeps the fleet's endpoints and does not include the discovery front door, so `cyanheads_describe_entry` could not resolve `cyanheads-mcp-server` at all. Adding it to the generated catalog is portfolio-side work this repo cannot reach, so `src/services/catalog/self-record.ts` defines a static `CatalogRecord` that `CatalogService.getServer()` and `getTool()` consult **only after** the remote index misses. The precedence order makes it self-healing: if the generator ever starts emitting a real entry, that entry wins on every request and the fallback becomes unreachable — no duplication, no stale local metadata masking the real record. `version` and `description` are read from `package.json` and the tool list is derived from the registered tool definitions, so neither can drift on release. The record is deliberately kept out of the vector index (`_buildIndex` packs only `payload.servers`), so `cyanheads_search_catalog` does not surface this server as a semantic match — only exact-name resolution reaches it.
+- **Self descriptions use a local fallback.** `src/services/catalog/self-record.ts` derives version and description from `package.json` and tools from the registered definitions. Exact remote names win, then unique case-insensitive remote matches; ambiguous folds return no match. Only the absence of a remote candidate reaches self, so remote metadata takes precedence after any refresh. The self record stays outside the vector index and is reachable only through name lookup.
 
 - **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. `CatalogService.initialize()` validates server names at load time and rejects entries with underscores so the heuristic stays reliable.
 
@@ -539,13 +554,13 @@ Portfolio side:
 
 ## Open Questions
 
-1. **Cold-load latency on the VPS.** First request after restart pays the model-load cost (~2-5s for arctic-embed-m on CPU). Acceptable for an MCP server but worth measuring. If it's bad, we can warm-load during `initialize()` or expose a `/ready` probe.
+1. **Cold-load latency on the VPS.** `initialize()` warms the model before transport startup, so model download and load time affect readiness rather than the first tool request. Measure cold-cache startup separately from warm search latency.
 
 2. **Build cache for the embedding model on Cloudflare Pages.** First portfolio build after `bun install` downloads the ONNX weights (~140MB quantized, ~440MB full). Whether Pages caches `~/.cache/huggingface/` across builds determines whether this is a one-time cost or a per-build penalty. Worth a single test build to find out.
 
 3. **Similarity floor calibration.** Default `0.3` is a guess. After a few real query patterns are observed, tune up or down based on the false-positive vs false-negative tradeoff.
 
-4. **Adding npm-only servers later.** *(Consumer side resolved.)* `endpoint` is now optional and every record gets local (stdio) `npx` snippets built from `npm`, with `requiredEnvVars` scaffolded into the JSON configs; `cyanheads_describe_entry` groups snippets into local vs remote. What remains is the producer side: `caseyjhand-portfolio/scripts/build-fleet-json.ts` must emit endpoint-less records for local-only servers (a stdio ingestion path for their `tools/list`) and populate `requiredEnvVars`. Until then no local-only server appears in the fleet, but the consumer is ready for them.
+4. **Local-only catalog coverage.** Endpoint-less records already appear in the catalog. Additional local-only servers depend on the producer supplying their metadata, tool inventories, and required environment variables.
 
 5. **Retiring the self record.** `cyanheads-mcp-server` resolves through the server-local fallback because the generated catalog omits it. If `build-fleet-json.ts` ever starts including the front door, the remote entry takes precedence automatically and `src/services/catalog/self-record.ts` becomes dead code worth deleting. Nothing breaks in the meantime, so this is cleanup, not a blocker.
 

@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-09-19 20:43:14
+Generated on: 2026-09-30 09:14:12
 
 ```text
 cyanheads-mcp-server/
@@ -130,6 +130,7 @@ cyanheads-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
@@ -165,6 +166,7 @@ cyanheads-mcp-server/
 │   ├── fuzz/
 │   │   └── tools.fuzz.test.ts
 │   ├── integration/
+│   │   ├── catalog-regressions.int.test.ts
 │   │   ├── error-envelope.int.test.ts
 │   │   └── tool-contracts.int.test.ts
 │   ├── prompts/
