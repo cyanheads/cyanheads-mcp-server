@@ -208,13 +208,12 @@ describe('cyanheads_describe_entry — handler behavior', () => {
     }
   });
 
-  it('tool result does not include installSnippets field', async () => {
+  it('tool result includes owning-server install snippets', async () => {
     const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
-    // discriminatedUnion: 'tool' branch has no installSnippets
-    expect((result as Record<string, unknown>).installSnippets).toBeUndefined();
+    expect(result.installSnippets).toHaveLength(11);
   });
 
   it('server result does not include a tool-only server field', async () => {

@@ -124,10 +124,10 @@ export interface CatalogSearchResult {
 
 /** Service interface. */
 export interface ICatalogService {
-  /** Look up a server by exact name. Returns null if not found. */
+  /** Exact remote name, then unique case-insensitive remote name, then self fallback. Ambiguous folds return null. */
   getServer(name: string): CatalogRecord | null;
 
-  /** Look up a tool by exact name. Returns null if not found. */
+  /** Exact remote name, then unique case-insensitive remote name, then self fallback. Ambiguous folds return null. */
   getTool(name: string): (CatalogTool & { serverRecord: CatalogRecord }) | null;
 
   /**

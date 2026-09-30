@@ -8,6 +8,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { markdown } from '@cyanheads/mcp-ts-core/utils';
 import { getCatalogService } from '@/services/catalog/service-instance.js';
 import { buildAllSnippets } from '@/services/catalog/snippets.js';
 
@@ -23,7 +24,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
   title: 'Describe Fleet Tool or Server',
   description:
     'Return the description and install snippets for a named tool or server. For tools: the ' +
-    'description and the server it belongs to. For servers: local (stdio, via npx) install ' +
+    'description, owning server, and connection metadata. For either kind: local (stdio, via npx) install ' +
     'snippets for every published server, plus remote (HTTP) connection snippets when a hosted ' +
     'endpoint exists — for every supported client, or one client via the client parameter.',
   annotations: { readOnlyHint: true, openWorldHint: false },
@@ -37,7 +38,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       .describe(
         'Tool name (snake_case, e.g. "earthquake_search") or server name ' +
           '(kebab-case, e.g. "earthquake-mcp-server"). 1-' +
-          `${NAME_MAX_LENGTH} characters. Use cyanheads_search_catalog to discover valid names.`,
+          `${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. Use cyanheads_search_catalog to discover valid names.`,
       ),
     kind: z
       .enum(['tool', 'server'])
@@ -61,15 +62,48 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
         z
           .object({
             kind: z.literal('tool').describe('Resolved as a tool entry.'),
-            name: z.string().describe('Resolved name (as looked up).'),
+            name: z.string().describe('Canonical resolved tool name.'),
             description: z.string().describe('Brief description of what the tool does.'),
             server: z.string().describe('Server package name that owns this tool.'),
+            npm: z.string().describe('Owning server npm package for local installation.'),
+            github: z.string().describe('Owning server GitHub repository URL.'),
+            endpoint: z
+              .string()
+              .optional()
+              .describe('Owning server hosted HTTP endpoint, when available.'),
+            auth: z.string().describe('Owning server hosted authentication requirement.'),
+            requiredEnvVars: z
+              .array(z.string())
+              .optional()
+              .describe('Environment variable names required for local installation.'),
+            installNotice: z
+              .string()
+              .optional()
+              .describe(
+                'Actionable guidance when the requested client has no compatible installation snippet.',
+              ),
+            installSnippets: z
+              .array(
+                z
+                  .object({
+                    client: z
+                      .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
+                      .describe('Target MCP client.'),
+                    transport: z
+                      .enum(['stdio', 'http'])
+                      .describe('Local stdio or hosted HTTP transport.'),
+                    label: z.string().describe('Install method label.'),
+                    payload: z.string().describe('Install command or configuration.'),
+                  })
+                  .describe('An installation snippet for the owning server.'),
+              )
+              .describe('Owning server install snippets, filtered by client when supplied.'),
           })
           .describe('A resolved tool entry — its description and the server that owns it.'),
         z
           .object({
             kind: z.literal('server').describe('Resolved as a server entry.'),
-            name: z.string().describe('Resolved name (as looked up).'),
+            name: z.string().describe('Canonical resolved server name.'),
             displayName: z.string().describe('Human-readable server label.'),
             description: z.string().describe('Brief description of what the server does.'),
             version: z.string().describe('Published version captured at fleet-generation time.'),
@@ -93,6 +127,12 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .optional()
               .describe(
                 'Env var names the local (stdio) install requires (e.g. ["MAILCHIMP_API_KEY"]). Absent when none.',
+              ),
+            installNotice: z
+              .string()
+              .optional()
+              .describe(
+                'Actionable guidance when the requested client has no compatible installation snippet.',
               ),
             toolCount: z.number().describe('Number of tools exposed by this server.'),
             tools: z
@@ -189,126 +229,104 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
     // Ambiguity check (can happen if resolvedKind is undefined and name has neither _ nor -).
     if (toolEntry && serverEntry) {
       throw ctx.fail('ambiguous_kind', `"${input.name}" matches both a tool and a server`, {
-        ...ctx.recoveryFor('ambiguous_kind'),
         name: input.name,
       });
     }
+
+    const owner = toolEntry?.serverRecord ?? serverEntry;
+    if (!owner) {
+      throw ctx.fail('not_found', `No tool or server named "${input.name}" in the catalog`, {
+        name: input.name,
+      });
+    }
+    const allSnippets = buildAllSnippets(owner);
+    const snippets = input.client
+      ? allSnippets.filter((s) => s.client === input.client)
+      : allSnippets;
+    const connection = {
+      npm: owner.npm,
+      github: owner.github,
+      ...(owner.endpoint ? { endpoint: owner.endpoint } : {}),
+      auth: owner.auth,
+      ...(owner.requiredEnvVars?.length ? { requiredEnvVars: owner.requiredEnvVars } : {}),
+      installSnippets: snippets,
+      ...(input.client && snippets.length === 0
+        ? {
+            installNotice:
+              'curl requires a hosted HTTP endpoint. This server supports local stdio installation; call cyanheads_describe_entry again with client "codex" for an install command.',
+          }
+        : {}),
+    };
 
     if (toolEntry) {
       return {
         result: {
           kind: 'tool' as const,
-          name: input.name,
+          name: toolEntry.name,
           description: toolEntry.description,
           server: toolEntry.serverRecord.name,
+          ...connection,
         },
       };
     }
 
-    if (serverEntry) {
-      const allSnippets = buildAllSnippets(serverEntry);
-      const snippets = input.client
-        ? allSnippets.filter((s) => s.client === input.client)
-        : allSnippets;
-
-      return {
-        result: {
-          kind: 'server' as const,
-          name: input.name,
-          displayName: serverEntry.displayName,
-          description: serverEntry.description,
-          version: serverEntry.version,
-          npm: serverEntry.npm,
-          github: serverEntry.github,
-          ...(serverEntry.endpoint ? { endpoint: serverEntry.endpoint } : {}),
-          auth: serverEntry.auth,
-          ...(serverEntry.requiredEnvVars?.length
-            ? { requiredEnvVars: serverEntry.requiredEnvVars }
-            : {}),
-          toolCount: serverEntry.tools.length,
-          tools: serverEntry.tools.map((t) => ({ name: t.name, description: t.description })),
-          installSnippets: snippets,
-        },
-      };
-    }
-
-    throw ctx.fail('not_found', `No tool or server named "${input.name}" in the catalog`, {
-      ...ctx.recoveryFor('not_found'),
-      name: input.name,
-    });
+    return {
+      result: {
+        kind: 'server' as const,
+        name: owner.name,
+        displayName: owner.displayName,
+        description: owner.description,
+        version: owner.version,
+        ...connection,
+        toolCount: owner.tools.length,
+        tools: owner.tools.map((t) => ({ name: t.name, description: t.description })),
+      },
+    };
   },
 
   format: ({ result }) => {
-    const lines: string[] = [];
-
-    if (result.kind === 'tool') {
-      lines.push(`# Tool: ${result.name}`);
-      lines.push(`**Server:** ${result.server}`);
-      lines.push('');
-      lines.push(`**Kind:** tool`);
-      lines.push('');
-      lines.push(`## Description`);
-      lines.push(result.description);
-    } else {
-      lines.push(`# Server: ${result.name}`);
-      lines.push(`**Kind:** server`);
-      lines.push(`**Display name:** ${result.displayName}`);
-      lines.push(`**Version:** ${result.version}`);
-      lines.push(`**npm:** ${result.npm}`);
-      lines.push(`**GitHub:** ${result.github}`);
-      lines.push(`**Auth:** ${result.auth}`);
-      lines.push(`**Tool count:** ${result.toolCount}`);
-      lines.push('');
-      lines.push('## Description');
-      lines.push(result.description);
-      lines.push('');
-
-      if (result.tools.length > 0) {
-        lines.push('## Tools');
-        for (const t of result.tools) {
-          lines.push(`- \`${t.name}\` — ${t.description}`);
-        }
-        lines.push('');
-      }
-
-      const local = result.installSnippets.filter((s) => s.transport === 'stdio');
-      const remote = result.installSnippets.filter((s) => s.transport === 'http');
-
-      if (local.length > 0) {
-        lines.push('## Local install (stdio)');
-        lines.push(
-          'Run locally via npx — available for every published server, no hosting required.',
-        );
-        if (result.requiredEnvVars?.length) {
-          lines.push('');
-          lines.push(
-            `**Required env vars:** ${result.requiredEnvVars.join(', ')} — set these for the server to work.`,
-          );
-        }
-        lines.push('');
-        for (const snippet of local) {
-          lines.push(`### ${snippet.label} (${snippet.client})`);
-          lines.push('```');
-          lines.push(snippet.payload);
-          lines.push('```');
-          lines.push('');
-        }
-      }
-
-      if (result.endpoint) {
-        lines.push('## Remote install (HTTP)');
-        lines.push(`**Endpoint:** ${result.endpoint}`);
-        lines.push('');
-        for (const snippet of remote) {
-          lines.push(`### ${snippet.label} (${snippet.client})`);
-          lines.push('```');
-          lines.push(snippet.payload);
-          lines.push('```');
-          lines.push('');
-        }
-      }
+    const md = markdown();
+    const label = (value: string) =>
+      /[\r\n]/u.test(value)
+        ? `\n\n${markdown().codeBlock(value).build()}`
+        : markdown().inlineCode(value).build();
+    md.h1(`${result.kind === 'tool' ? 'Tool' : 'Server'}: ${label(result.name)}`).keyValue(
+      'Kind',
+      result.kind,
+    );
+    if (result.kind === 'tool') md.keyValue('Server', label(result.server));
+    else {
+      md.keyValue('Display name', label(result.displayName))
+        .keyValue('Version', label(result.version))
+        .keyValue('Tool count', result.toolCount);
     }
-
-    return [{ type: 'text', text: lines.join('\n') }];
+    md.keyValue('npm', label(result.npm))
+      .keyValue('GitHub', label(result.github))
+      .keyValue('Auth', label(result.auth))
+      .h2('Description')
+      .codeBlock(result.description);
+    if (result.kind === 'server' && result.tools.length) {
+      md.h2('Tools');
+      for (const entry of result.tools) md.h3(label(entry.name)).codeBlock(entry.description);
+    }
+    if (result.requiredEnvVars?.length) {
+      md.h2('Required env vars');
+      for (const name of result.requiredEnvVars) md.codeBlock(name);
+      md.paragraph('Set these environment variables before starting the local server.');
+    }
+    if (result.installNotice) md.paragraph(result.installNotice);
+    const local = result.installSnippets.filter((s) => s.transport === 'stdio');
+    const remote = result.installSnippets.filter((s) => s.transport === 'http');
+    if (local.length) {
+      md.h2('Local install (stdio)');
+      for (const snippet of local)
+        md.h3(label(snippet.label)).keyValue('Client', snippet.client).codeBlock(snippet.payload);
+    }
+    if (result.endpoint) {
+      md.h2('Remote install (HTTP)').keyValue('Endpoint', label(result.endpoint));
+      for (const snippet of remote)
+        md.h3(label(snippet.label)).keyValue('Client', snippet.client).codeBlock(snippet.payload);
+    }
+    return [{ type: 'text', text: md.build() }];
   },
 });

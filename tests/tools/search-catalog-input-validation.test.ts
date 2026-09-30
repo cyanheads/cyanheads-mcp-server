@@ -381,6 +381,8 @@ describe('cyanheads_search_catalog — security', () => {
 
   it('format() output does not contain raw env var names', () => {
     const result = {
+      offset: 0,
+      nextOffset: null,
       results: [
         {
           name: 'earthquake_search',

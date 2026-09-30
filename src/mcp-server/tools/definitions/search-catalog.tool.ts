@@ -7,6 +7,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { markdown } from '@cyanheads/mcp-ts-core/utils';
 import { getCatalogService } from '@/services/catalog/service-instance.js';
 
 /**
@@ -31,9 +32,10 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       .string()
       .min(1)
       .max(QUERY_MAX_LENGTH)
+      .regex(/\S/u, 'Query must contain a non-whitespace character.')
       .describe(
         'Natural language search query. Describe what you want to accomplish, a workflow, or a ' +
-          `capability area. 1-${QUERY_MAX_LENGTH} characters.`,
+          `capability area. 1-${QUERY_MAX_LENGTH} raw characters; surrounding whitespace is trimmed. Must contain non-whitespace text.`,
       ),
     scope: z
       .enum(['tools', 'servers'])
@@ -52,9 +54,39 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       .max(20)
       .default(5)
       .describe('Maximum number of results to return (1-20). Default 5.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        'Result offset. Use nextOffset with the same query, scope, category, and limit; pages use the current catalog.',
+      ),
+    serversOffset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe(
+        'Independent server roll-up offset (10 per page). Use nextServersOffset; must be zero in servers scope.',
+      ),
   }),
 
   output: z.object({
+    offset: z.number().describe('Current ranked-result offset.'),
+    nextOffset: z
+      .number()
+      .nullable()
+      .describe('Next ranked-result offset, or null when exhausted.'),
+    serversOffset: z
+      .number()
+      .optional()
+      .describe('Current server roll-up offset; tools scope only.'),
+    nextServersOffset: z
+      .number()
+      .nullable()
+      .optional()
+      .describe('Next server roll-up offset, or null when exhausted; tools scope only.'),
     results: z
       .array(
         z
@@ -103,7 +135,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       )
       .optional()
       .describe(
-        'Roll-up of distinct servers across the full match set, before the limit slice. Present only for scope "tools". Ordered by topScore desc (name-tiebroken); capped at 10. Use serversTotal to see how many distinct servers matched in total.',
+        'Server roll-up from the full match set, independent of result offset/limit. Tools scope only. Ordered by topScore desc (name-tiebroken); 10 per page starting at serversOffset. Use nextServersOffset to continue and serversTotal for the full distinct count.',
       ),
     serversTotal: z
       .number()
@@ -122,11 +154,17 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       .string()
       .optional()
       .describe(
-        'Guidance when no results matched — e.g. how to broaden the query or try a different scope. Absent on successful result pages.',
+        'Guidance for zero matches or an exhausted result page. Absent on nonempty result pages.',
       ),
   },
 
   errors: [
+    {
+      reason: 'invalid_servers_offset',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A nonzero serversOffset is supplied in servers scope.',
+      recovery: 'Set serversOffset to zero in servers scope; use offset to page server results.',
+    },
     {
       reason: 'catalog_empty',
       code: JsonRpcErrorCode.ServiceUnavailable,
@@ -141,8 +179,12 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
   ],
 
   async handler(input, ctx) {
+    if (input.scope === 'servers' && input.serversOffset !== 0) {
+      throw ctx.fail('invalid_servers_offset');
+    }
+    const query = input.query.trim();
     ctx.log.info('Searching catalog', {
-      query: input.query,
+      query,
       scope: input.scope,
       limit: input.limit,
     });
@@ -150,24 +192,34 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
     const catalog = getCatalogService();
 
     const allResults = await catalog.search({
-      query: input.query,
+      query,
       scope: input.scope,
       ...(input.category ? { category: input.category } : {}),
     });
 
     const totalMatched = allResults.length;
 
-    ctx.enrich.echo(input.query);
+    ctx.enrich.echo(query);
     ctx.enrich.total(totalMatched);
 
     if (totalMatched === 0) {
       ctx.enrich.notice(
-        `No ${input.scope} matched "${input.query}". Try broadening the query${input.category ? ', removing the category filter,' : ''} or switching to scope "${input.scope === 'tools' ? 'servers' : 'tools'}".`,
+        `No ${input.scope} matched. Try broadening the query${input.category ? ', removing the category filter,' : ''} or switching to scope "${input.scope === 'tools' ? 'servers' : 'tools'}".`,
       );
-      return { results: [], scope: input.scope };
+    } else if (input.offset >= totalMatched) {
+      ctx.enrich.notice(
+        'No results on this page. Use offset 0 to return to the first result page.',
+      );
     }
 
-    const results = allResults.slice(0, input.limit);
+    const results = allResults.slice(input.offset, input.offset + input.limit);
+    const page = {
+      results,
+      scope: input.scope,
+      offset: input.offset,
+      nextOffset:
+        input.offset + results.length < totalMatched ? input.offset + results.length : null,
+    };
 
     ctx.log.info('Search complete', { totalMatched, returned: results.length });
 
@@ -188,7 +240,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       const serversTotal = serverMap.size;
       const servers = Array.from(serverMap.entries())
         .sort(([nameA, a], [nameB, b]) => b.topScore - a.topScore || nameA.localeCompare(nameB))
-        .slice(0, SERVERS_CAP)
+        .slice(input.serversOffset, input.serversOffset + SERVERS_CAP)
         .map(([name, agg]) => {
           const record = catalog.getServer(name);
           return {
@@ -200,29 +252,49 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
           };
         });
 
-      return { results, scope: input.scope, servers, serversTotal };
+      return {
+        ...page,
+        servers,
+        serversTotal,
+        serversOffset: input.serversOffset,
+        nextServersOffset:
+          input.serversOffset + servers.length < serversTotal
+            ? input.serversOffset + servers.length
+            : null,
+      };
     }
 
-    return { results, scope: input.scope };
+    return page;
   },
 
   format: (result) => {
-    const lines: string[] = [`**Scope:** ${result.scope}`, ''];
+    const label = (value: string) =>
+      /[\r\n]/u.test(value)
+        ? `\n\n${markdown().codeBlock(value).build()}`
+        : markdown().inlineCode(value).build();
+    const lines: string[] = [
+      `**Scope:** ${result.scope}`,
+      `offset: ${result.offset}; nextOffset: ${result.nextOffset}`,
+      '',
+    ];
 
     if (result.results.length === 0) {
-      lines.push('No results matched.');
+      lines.push(result.offset > 0 ? 'No results on this page.' : 'No results matched.');
     } else {
       for (const item of result.results) {
-        lines.push(`### ${item.name}`);
+        lines.push(`### ${label(item.name)}`);
         lines.push(
-          `**Server:** ${item.server}  |  **Category:** ${item.category}  |  **Score:** ${item.score.toFixed(3)}`,
+          `**Server:** ${label(item.server)}\n\n**Category:** ${item.category}  |  **Score:** ${item.score.toFixed(3)}`,
         );
-        lines.push(item.brief);
+        lines.push(markdown().codeBlock(item.brief).build());
         lines.push('');
       }
     }
 
-    if (result.servers && result.servers.length > 0) {
+    if (result.servers) {
+      lines.push(
+        `serversOffset: ${result.serversOffset}; nextServersOffset: ${result.nextServersOffset}`,
+      );
       const cap = result.servers.length;
       const total = result.serversTotal ?? cap;
       const header = total > cap ? `## Servers (showing ${cap} of ${total})` : '## Servers';
@@ -230,9 +302,9 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       lines.push('');
       for (const s of result.servers) {
         lines.push(
-          `**${s.name}** (${s.category}) — ${s.matchedTools} matched tool${s.matchedTools === 1 ? '' : 's'}, top score ${s.topScore.toFixed(3)}`,
+          `${label(s.name)}\n\n(${s.category}) — ${s.matchedTools} matched tool${s.matchedTools === 1 ? '' : 's'}, top score ${s.topScore.toFixed(3)}`,
         );
-        lines.push(s.brief);
+        lines.push(markdown().codeBlock(s.brief).build());
         lines.push('');
       }
     }

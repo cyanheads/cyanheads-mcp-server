@@ -332,6 +332,10 @@ describe('cyanheads_search_catalog', () => {
 
   it('renders output fields in format()', () => {
     const result = {
+      offset: 0,
+      nextOffset: null,
+      serversOffset: 0,
+      nextServersOffset: 1,
       results: [
         {
           name: 'earthquake_search',
@@ -369,6 +373,8 @@ describe('cyanheads_search_catalog', () => {
 
   it('renders empty results in format()', () => {
     const result = {
+      offset: 0,
+      nextOffset: null,
       results: [],
       scope: 'tools' as const,
     };
@@ -380,6 +386,10 @@ describe('cyanheads_search_catalog', () => {
 
   it('renders servers roll-up with cap header in format()', () => {
     const result = {
+      offset: 0,
+      nextOffset: null,
+      serversOffset: 0,
+      nextServersOffset: 1,
       results: [],
       scope: 'tools' as const,
       servers: [

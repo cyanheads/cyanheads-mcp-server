@@ -381,11 +381,10 @@ describe('RemoteJsonCatalogProvider.load()', () => {
   });
 
   describe('edge cases', () => {
-    it('handles an empty servers array gracefully', async () => {
+    it('rejects an empty servers array', async () => {
       mockFetchOk({ ...MINIMAL_PAYLOAD, servers: [] });
       const provider = new RemoteJsonCatalogProvider(TEST_CONFIG);
-      const payload = await provider.load();
-      expect(payload.servers).toHaveLength(0);
+      await expect(provider.load()).rejects.toThrow('servers');
     });
 
     it('can be called multiple times (no memoization enforced)', async () => {

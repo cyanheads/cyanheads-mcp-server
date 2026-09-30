@@ -15,6 +15,10 @@ setCatalogService(createCatalogServiceFake());
 toolContractSuite(searchCatalogTool, {
   success: [
     { name: 'validates, invokes, and formats catalog search', input: { query: 'example' } },
+    {
+      name: 'formats an exhausted result and roll-up page',
+      input: { query: 'example', offset: 20, serversOffset: 10 },
+    },
   ],
 });
 
@@ -23,6 +27,10 @@ toolContractSuite(describeEntryTool, {
     {
       name: 'validates, invokes, and formats a server description',
       input: { name: 'example-mcp-server', kind: 'server' },
+    },
+    {
+      name: 'validates and formats client-filtered tool connection metadata',
+      input: { name: 'example_search', kind: 'tool', client: 'codex' },
     },
   ],
   errors: [

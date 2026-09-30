@@ -432,6 +432,10 @@ describe('cyanheads_describe_entry', () => {
         name: 'earthquake_search',
         description: 'Query seismic events by location.',
         server: 'earthquake-mcp-server',
+        npm: '@cyanheads/earthquake-mcp-server',
+        github: 'https://github.com/cyanheads/earthquake-mcp-server',
+        auth: 'none',
+        installSnippets: [],
       },
     };
     const blocks = describeEntryTool.format!(output);
@@ -563,7 +567,7 @@ describe('cyanheads_describe_entry', () => {
     const blocks = describeEntryTool.format!(output);
     const text = blocks.map((b) => ('text' in b ? b.text : '')).join('');
 
-    expect(text).toContain('# Server: cyanheads-mcp-server');
+    expect(text).toContain('# Server: `cyanheads-mcp-server`');
     expect(text).toContain('@cyanheads/cyanheads-mcp-server');
     expect(text).toContain('## Tools');
     expect(text).toContain('cyanheads_search_catalog');

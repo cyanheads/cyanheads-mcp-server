@@ -1,13 +1,14 @@
 /**
  * @fileoverview RemoteJsonCatalogProvider — fetches and validates the fleet.json
- * payload (schema v2, with baked embeddings) from a configurable URL. Caches the
- * validated result in memory after a successful load.
+ * payload (schema v2, with baked embeddings) from a configurable URL. Normalizes
+ * duplicate identities before CatalogService builds and caches the index.
  * @module services/catalog/remote-catalog-provider
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { z } from '@cyanheads/mcp-ts-core';
 import { internalError, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, requestContextService } from '@cyanheads/mcp-ts-core/utils';
+import { fetchWithTimeout, logger, requestContextService } from '@cyanheads/mcp-ts-core/utils';
 import type { ServerConfig } from '@/config/server-config.js';
 import type { FleetPayload } from './types.js';
 
@@ -44,7 +45,7 @@ const FleetPayloadSchema = z.object({
   embeddingModel: z.string(),
   embeddingDims: z.number().int().positive(),
   embeddingQueryPrefix: z.string(),
-  servers: z.array(CatalogRecordSchema),
+  servers: z.array(CatalogRecordSchema).min(1),
 });
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,36 @@ export class RemoteJsonCatalogProvider {
       });
     }
 
-    return parsed.data as FleetPayload;
+    const payload = parsed.data as FleetPayload;
+    let collapsed = 0;
+    const identities: string[] = [];
+    function unique<T extends { name: string }>(records: T[], owner: string): T[] {
+      const byName = new Map<string, T>();
+      for (const record of records) {
+        const previous = byName.get(record.name);
+        if (!previous) {
+          byName.set(record.name, record);
+        } else if (!isDeepStrictEqual(previous, record)) {
+          throw internalError(`Conflicting catalog records for ${owner}/${record.name}.`);
+        } else {
+          collapsed++;
+          if (identities.length < 10) identities.push(`${owner}/${record.name}`.slice(0, 160));
+        }
+      }
+      return [...byName.values()];
+    }
+    const servers = unique(
+      payload.servers.map((server) => ({
+        ...server,
+        tools: unique(server.tools, server.name),
+      })),
+      'servers',
+    );
+    if (collapsed) {
+      logger.warning(
+        `Collapsed ${collapsed} identical catalog records: ${JSON.stringify(identities)}`,
+      );
+    }
+    return { ...payload, servers };
   }
 }

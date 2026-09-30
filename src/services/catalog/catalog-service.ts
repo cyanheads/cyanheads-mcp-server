@@ -31,12 +31,12 @@ interface CatalogIndex {
   dims: number;
   initializedAt: string;
   payload: FleetPayload;
+  serverByFoldedName: Map<string, CatalogRecord | null>;
   serverByName: Map<string, CatalogRecord>;
   /** Packed [serverCount × dims] row-major. */
   serverVectors: Float32Array;
+  toolByFoldedName: Map<string, (CatalogTool & { serverRecord: CatalogRecord }) | null>;
   toolByName: Map<string, CatalogTool & { serverRecord: CatalogRecord }>;
-  /** Parallel to toolVectors row order: toolByName entries built in this order. */
-  toolNamesInOrder: string[];
   /** Packed [toolCount × dims] row-major. */
   toolVectors: Float32Array;
 }
@@ -75,7 +75,7 @@ export class CatalogService implements ICatalogService {
     this._index = this._buildIndex(payload);
 
     logger.info(
-      `Fleet catalog loaded: ${payload.servers.length} servers, ${this._index.toolByName.size} tools ` +
+      `Fleet catalog loaded: ${payload.servers.length} servers, ${this._index.toolVectors.length / this._index.dims} tools ` +
         `(model=${payload.embeddingModel}, dims=${payload.embeddingDims}, generatedAt=${payload.generatedAt})`,
     );
 
@@ -158,9 +158,9 @@ export class CatalogService implements ICatalogService {
 
   /**
    * The remote catalog is generated outside this repo and does not include the
-   * discovery front door itself, so both exact-name lookups fall back to the
+   * discovery front door itself, so both name lookups fall back to the
    * server-local self record. The remote index is always consulted first: if the
-   * generator ever starts emitting a real `cyanheads-mcp-server` entry, that
+   * generator ever starts emitting an exact or unique case-folded entry, that
    * entry wins on every request and the fallback becomes unreachable — no
    * duplication, no stale local metadata masking the real record. The static
    * record also survives `_maybeRefresh()`'s atomic index swap by construction,
@@ -168,14 +168,20 @@ export class CatalogService implements ICatalogService {
    */
   getTool(name: string): (CatalogTool & { serverRecord: CatalogRecord }) | null {
     const index = this._assertInitialized();
-    return index.toolByName.get(name) ?? getSelfCatalogTool(name);
+    const exact = index.toolByName.get(name);
+    if (exact) return exact;
+    const folded = name.toLowerCase();
+    if (index.toolByFoldedName.has(folded)) return index.toolByFoldedName.get(folded) ?? null;
+    return getSelfCatalogTool(folded);
   }
 
   getServer(name: string): CatalogRecord | null {
     const index = this._assertInitialized();
-    return (
-      index.serverByName.get(name) ?? (name === SELF_RECORD_NAME ? getSelfCatalogRecord() : null)
-    );
+    const exact = index.serverByName.get(name);
+    if (exact) return exact;
+    const folded = name.toLowerCase();
+    if (index.serverByFoldedName.has(folded)) return index.serverByFoldedName.get(folded) ?? null;
+    return folded === SELF_RECORD_NAME ? getSelfCatalogRecord() : null;
   }
 
   listCategories(): CatalogCategory[] {
@@ -193,7 +199,7 @@ export class CatalogService implements ICatalogService {
   } {
     const index = this._assertInitialized();
     return {
-      toolCount: index.toolByName.size,
+      toolCount: index.toolVectors.length / index.dims,
       serverCount: index.payload.servers.length,
       initializedAt: index.initializedAt,
       embeddingModel: index.payload.embeddingModel,
@@ -235,7 +241,11 @@ export class CatalogService implements ICatalogService {
     const toolVectors = new Float32Array(toolCount * dims);
     const toolByName = new Map<string, CatalogTool & { serverRecord: CatalogRecord }>();
     const serverByName = new Map<string, CatalogRecord>();
-    const toolNamesInOrder: string[] = [];
+    const serverByFoldedName = new Map<string, CatalogRecord | null>();
+    const toolByFoldedName = new Map<
+      string,
+      (CatalogTool & { serverRecord: CatalogRecord }) | null
+    >();
 
     let toolI = 0;
     for (const [si, server] of payload.servers.entries()) {
@@ -252,6 +262,8 @@ export class CatalogService implements ICatalogService {
 
       serverVectors.set(server.embedding, si * dims);
       serverByName.set(server.name, server);
+      const serverFold = server.name.toLowerCase();
+      serverByFoldedName.set(serverFold, serverByFoldedName.has(serverFold) ? null : server);
 
       for (const tool of server.tools) {
         if (tool.embedding.length !== dims) {
@@ -260,8 +272,10 @@ export class CatalogService implements ICatalogService {
           );
         }
         toolVectors.set(tool.embedding, toolI * dims);
-        toolByName.set(tool.name, { ...tool, serverRecord: server });
-        toolNamesInOrder.push(tool.name);
+        const entry = { ...tool, serverRecord: server };
+        toolByName.set(tool.name, entry);
+        const toolFold = tool.name.toLowerCase();
+        toolByFoldedName.set(toolFold, toolByFoldedName.has(toolFold) ? null : entry);
         toolI++;
       }
     }
@@ -272,7 +286,8 @@ export class CatalogService implements ICatalogService {
       toolVectors,
       toolByName,
       serverByName,
-      toolNamesInOrder,
+      toolByFoldedName,
+      serverByFoldedName,
       dims,
       initializedAt: new Date().toISOString(),
     };
@@ -296,7 +311,7 @@ export class CatalogService implements ICatalogService {
       const next = this._buildIndex(payload);
       this._index = next;
       logger.info(
-        `Catalog refreshed: ${payload.servers.length} servers, ${next.toolByName.size} tools (generatedAt=${payload.generatedAt})`,
+        `Catalog refreshed: ${payload.servers.length} servers, ${next.toolVectors.length / next.dims} tools (generatedAt=${payload.generatedAt})`,
       );
     } catch (err) {
       logger.warning(

@@ -98,7 +98,21 @@ describe('argument rejection envelope', () => {
 });
 
 describe('declared contract reasons', () => {
-  it('carries not_found with its forwarded recovery hint on both surfaces', async () => {
+  it('explains the invalid_servers_offset recovery on both surfaces', async () => {
+    const result = await runToolContract(searchCatalogTool, {
+      query: 'example',
+      scope: 'servers',
+      serversOffset: 1,
+    });
+    expect(errorOf(result)?.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(errorOf(result)?.data?.reason).toBe('invalid_servers_offset');
+    expect(errorOf(result)?.data?.recovery).toEqual({
+      hint: 'Set serversOffset to zero in servers scope; use offset to page server results.',
+    });
+    expect(textOf(result)).toContain('Set serversOffset to zero');
+    expect(textOf(result)).toContain('invalid_servers_offset');
+  });
+  it('carries not_found with its declared recovery hint on both surfaces', async () => {
     const result = await runToolContract(describeEntryTool, {
       name: 'missing-mcp-server',
       kind: 'server',
@@ -182,6 +196,10 @@ describe('declared contract reasons', () => {
       expect(errorOf(result)?.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
       expect(errorOf(result)?.data?.reason).toBe('catalog_empty');
       expect(errorOf(result)?.data?.retryable).toBe(true);
+      expect(errorOf(result)?.data?.recovery).toEqual({
+        hint: 'Retry in a few seconds; the catalog is still loading.',
+      });
+      expect(textOf(result)).toContain('Recovery: Retry in a few seconds');
       expect(textOf(result)).toContain('(reason catalog_empty');
       expect(textOf(result)).toContain('retryable');
       expect(textOf(result)).not.toContain('not retryable');
