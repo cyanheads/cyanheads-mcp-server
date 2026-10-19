@@ -344,7 +344,7 @@ z.object({
   name: z.string().min(1).max(64).describe(
     'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server.'
   ),
-  server: z.string().min(1).max(64).optional().describe(
+  server: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(64).optional()).describe(   // a form client's blank reads as unset
     'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with this name. 1-64 characters, resolved like a server name. Required when the tool name has more than one owner; with a server name, it must name the same server.'
   ),
   kind: z.enum(['tool', 'server']).optional().describe(

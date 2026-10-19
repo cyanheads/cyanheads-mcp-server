@@ -41,11 +41,12 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
           '(kebab-case, e.g. "earthquake-mcp-server"). 1-' +
           `${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server. Use cyanheads_search_catalog to discover valid names.`,
       ),
+    // Form clients submit an untouched optional field as '': read it as unset before the length check.
     server: z
-      .string()
-      .min(1)
-      .max(NAME_MAX_LENGTH)
-      .optional()
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().min(1).max(NAME_MAX_LENGTH).optional(),
+      )
       .describe(
         'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with ' +
           `this name. 1-${NAME_MAX_LENGTH} characters, resolved like a server name. Required when the tool ` +

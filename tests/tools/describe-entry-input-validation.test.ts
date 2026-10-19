@@ -4,7 +4,8 @@
  * @module tests/tools/describe-entry-input-validation.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { describeEntryTool } from '@/mcp-server/tools/definitions/describe-entry.tool.js';
 import { initCatalogService } from '@/services/catalog/catalog-service.js';
@@ -192,11 +193,23 @@ describe('cyanheads_describe_entry — input validation', () => {
     expect(describeEntryTool.input.parse({ name: 'test_tool' }).server).toBeUndefined();
   });
 
-  it.each([
-    { label: 'empty', server: '' },
-    { label: '65-character', server: 'a'.repeat(65) },
-  ])('rejects an $label owning server name', ({ server }) => {
-    expect(() => describeEntryTool.input.parse({ name: 'test_tool', server })).toThrow();
+  it('rejects a 65-character owning server name', () => {
+    expect(() =>
+      describeEntryTool.input.parse({ name: 'test_tool', server: 'a'.repeat(65) }),
+    ).toThrow();
+  });
+
+  it('reads a blank owning server from a form client as omitted', () => {
+    expect(describeEntryTool.input.parse({ name: 'test_tool', server: '' }).server).toBeUndefined();
+  });
+
+  it('advertises server as an optional 1-64 character string', () => {
+    const schema = z.toJSONSchema(describeEntryTool.input) as unknown as {
+      properties: { server: { type: string; minLength: number; maxLength: number } };
+      required: string[];
+    };
+    expect(schema.properties.server).toMatchObject({ type: 'string', minLength: 1, maxLength: 64 });
+    expect(schema.required).toEqual(['name']);
   });
 });
 
@@ -228,6 +241,19 @@ describe('cyanheads_describe_entry — handler behavior', () => {
     if (result.kind === 'server') {
       expect(result.toolCount).toBe(2);
     }
+  });
+
+  it('describes a tool sent with a blank server exactly as one sent without it', async () => {
+    const omitted = await runToolContract(describeEntryTool, { name: 'earthquake_search' });
+    const blank = await runToolContract(describeEntryTool, {
+      name: 'earthquake_search',
+      server: '',
+    });
+    expect(blank.isError).not.toBe(true);
+    expect(blank.structuredContent).toEqual(omitted.structuredContent);
+    expect(blank.structuredContent).toMatchObject({
+      result: { kind: 'tool', server: 'earthquake-mcp-server' },
+    });
   });
 
   it('tool result includes owning-server install snippets', async () => {
