@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.4](changelog/0.4.x/0.4.4.md) — 2026-10-18
+
+cyanheads_describe_entry resolves tools by owning server and rejects ambiguous names; search scores are true cosine similarities; install snippets are corrected and add Cline; search limits above 20 are served with a continuation notice.
+
 ## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-09-30
 
 Catalog integrity fixes, complete search pagination, and client-specific installation guidance for every entry.

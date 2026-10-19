@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-09-30 09:14:12
+Generated on: 2026-10-18 22:31:57
 
 ```text
 cyanheads-mcp-server/
@@ -134,6 +134,7 @@ cyanheads-mcp-server/
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
