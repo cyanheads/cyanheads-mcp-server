@@ -18,6 +18,16 @@ import { getCatalogService } from '@/services/catalog/service-instance.js';
  */
 const QUERY_MAX_LENGTH = 500;
 
+/** Most ranked results one call returns; a larger `limit` is served up to this and the rest named. */
+const RESULTS_PER_CALL = 20;
+
+/**
+ * Hard ceiling on `limit`, set above the catalog's tool count so a "return everything"
+ * request is served while garbage input like `1e6` is rejected. It bounds no cost:
+ * the full match set is ranked before the page is sliced.
+ */
+const LIMIT_MAX = 1000;
+
 export const searchCatalogTool = tool('cyanheads_search_catalog', {
   title: 'Search Fleet Tools and Servers',
   description:
@@ -51,9 +61,11 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       .number()
       .int()
       .min(1)
-      .max(20)
+      .max(LIMIT_MAX)
       .default(5)
-      .describe('Maximum number of results to return (1-20). Default 5.'),
+      .describe(
+        `Maximum number of results to return (1-${LIMIT_MAX}). Default 5. At most ${RESULTS_PER_CALL} per call: a larger limit returns up to ${RESULTS_PER_CALL}, with a notice naming the offset to continue from when more matches follow.`,
+      ),
     offset: z
       .number()
       .int()
@@ -97,7 +109,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
             server: z
               .string()
               .describe(
-                'Server package name that owns this tool (e.g. "arxiv-mcp-server"). Same as name when scope is "servers".',
+                'Server package name that owns this tool (e.g. "arxiv-mcp-server"). Same as name when scope is "servers". Pass name and server to cyanheads_describe_entry to describe exactly this row.',
               ),
             brief: z.string().describe('One-line summary of what this tool or server does.'),
             category: z
@@ -150,11 +162,19 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
   enrichment: {
     effectiveQuery: z.string().describe('The query that was searched.'),
     totalCount: z.number().describe('Total relevant matches before the limit was applied.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe(
+        `True when limit exceeded the ${RESULTS_PER_CALL}-per-call cap and more matches follow this page.`,
+      ),
+    shown: z.number().optional().describe('Results returned on this capped page.'),
+    cap: z.number().optional().describe('Per-call result cap that was applied.'),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance for zero matches or an exhausted result page. Absent on nonempty result pages.',
+        `Guidance for zero matches, an exhausted result page, or a page cut to the ${RESULTS_PER_CALL}-per-call cap with more matches following (names the offset to continue from). Absent otherwise.`,
       ),
   },
 
@@ -212,14 +232,22 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       );
     }
 
-    const results = allResults.slice(input.offset, input.offset + input.limit);
-    const page = {
-      results,
-      scope: input.scope,
-      offset: input.offset,
-      nextOffset:
-        input.offset + results.length < totalMatched ? input.offset + results.length : null,
-    };
+    const results = allResults.slice(
+      input.offset,
+      input.offset + Math.min(input.limit, RESULTS_PER_CALL),
+    );
+    const nextOffset =
+      input.offset + results.length < totalMatched ? input.offset + results.length : null;
+    const page = { results, scope: input.scope, offset: input.offset, nextOffset };
+
+    if (input.limit > RESULTS_PER_CALL && nextOffset !== null) {
+      const remaining = totalMatched - nextOffset;
+      ctx.enrich.truncated({
+        shown: results.length,
+        cap: RESULTS_PER_CALL,
+        guidance: `limit ${input.limit} exceeds the per-call cap of ${RESULTS_PER_CALL}; ${remaining} more ${remaining === 1 ? 'result follows' : 'results follow'}. Continue with offset ${nextOffset}.`,
+      });
+    }
 
     ctx.log.info('Search complete', { totalMatched, returned: results.length });
 

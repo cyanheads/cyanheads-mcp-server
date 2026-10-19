@@ -157,15 +157,23 @@ describe('cyanheads_describe_entry — input validation', () => {
   it('accepts all valid client values', () => {
     for (const client of [
       'claude-code',
+      'cline',
       'codex',
       'cursor',
       'curl',
       'gemini',
       'streamable-http',
     ] as const) {
-      expect(() => describeEntryTool.input.parse({ name: 'test-server', client })).not.toThrow();
+      expect(describeEntryTool.input.parse({ name: 'test-server', client }).client).toBe(client);
     }
   });
+
+  it.each(['Cline', 'streamableHttp', 'http'])(
+    'rejects the near-miss client value %j',
+    (client) => {
+      expect(() => describeEntryTool.input.parse({ name: 'test-server', client })).toThrow();
+    },
+  );
 
   it('accepts kind "tool"', () => {
     expect(() => describeEntryTool.input.parse({ name: 'test_tool', kind: 'tool' })).not.toThrow();
@@ -175,6 +183,20 @@ describe('cyanheads_describe_entry — input validation', () => {
     expect(() =>
       describeEntryTool.input.parse({ name: 'test-server', kind: 'server' }),
     ).not.toThrow();
+  });
+
+  it('keeps an owning server name of 1-64 characters', () => {
+    for (const server of ['a', 'faa-aircraft-registry-mcp-server', 'a'.repeat(64)]) {
+      expect(describeEntryTool.input.parse({ name: 'test_tool', server }).server).toBe(server);
+    }
+    expect(describeEntryTool.input.parse({ name: 'test_tool' }).server).toBeUndefined();
+  });
+
+  it.each([
+    { label: 'empty', server: '' },
+    { label: '65-character', server: 'a'.repeat(65) },
+  ])('rejects an $label owning server name', ({ server }) => {
+    expect(() => describeEntryTool.input.parse({ name: 'test_tool', server })).toThrow();
   });
 });
 
@@ -213,7 +235,7 @@ describe('cyanheads_describe_entry — handler behavior', () => {
     const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'tool' });
     const { result } = await describeEntryTool.handler(input, ctx);
     expect(result.kind).toBe('tool');
-    expect(result.installSnippets).toHaveLength(11);
+    expect(result.installSnippets).toHaveLength(13);
   });
 
   it('server result does not include a tool-only server field', async () => {

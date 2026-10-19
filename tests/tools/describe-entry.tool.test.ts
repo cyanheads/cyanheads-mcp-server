@@ -6,7 +6,8 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { describeEntryTool } from '@/mcp-server/tools/definitions/describe-entry.tool.js';
 import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
@@ -162,8 +163,8 @@ describe('cyanheads_describe_entry', () => {
         { name: 'earthquake_get_feed', description: 'Fetch real-time USGS earthquake feed.' },
       ]);
       expect(result.toolCount).toBe(result.tools.length);
-      // 5 local (stdio) + 6 remote (http)
-      expect(result.installSnippets).toHaveLength(11);
+      // 6 local (stdio) + 7 remote (http)
+      expect(result.installSnippets).toHaveLength(13);
     }
   });
 
@@ -316,34 +317,96 @@ describe('cyanheads_describe_entry', () => {
       client: 'streamable-http',
     });
     const { result } = await describeEntryTool.handler(input, ctx);
-    if (result.kind === 'server') {
-      const http = result.installSnippets.find((s) => s.transport === 'http')!;
-      const parsed = JSON.parse(http.payload);
-      expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
-        type: 'http',
-        url: 'https://earthquake.caseyjhand.com/mcp',
-      });
-    }
+    expect(result.installSnippets.map((s) => [s.transport, s.label])).toEqual([
+      ['stdio', 'Claude Desktop / generic'],
+      ['http', 'Generic (mcpServers JSON)'],
+    ]);
+    const http = result.installSnippets.find((s) => s.transport === 'http')!;
+    const parsed = JSON.parse(http.payload);
+    expect(parsed.mcpServers['earthquake-mcp-server']).toEqual({
+      type: 'http',
+      url: 'https://earthquake.caseyjhand.com/mcp',
+    });
   });
 
-  it('curl snippet POSTs initialize with the MCP-Protocol-Version header', async () => {
-    const ctx = createMockContext({ errors: describeEntryTool.errors });
-    const input = describeEntryTool.input.parse({
+  it('cline returns its stdio and streamableHttp snippets for a hosted server on both surfaces', async () => {
+    const described = await runToolContract(describeEntryTool, {
+      name: 'earthquake-mcp-server',
+      client: 'cline',
+    });
+    const { result } = describeEntryTool.output.parse(described.structuredContent);
+    expect(result.installSnippets.map((s) => [s.client, s.transport, s.label])).toEqual([
+      ['cline', 'stdio', 'Cline (cline_mcp_settings.json)'],
+      ['cline', 'http', 'Cline (cline_mcp_settings.json)'],
+    ]);
+    const [stdio, http] = result.installSnippets;
+    expect(JSON.parse(stdio!.payload)).toEqual({
+      mcpServers: {
+        'earthquake-mcp-server': {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', '@cyanheads/earthquake-mcp-server'],
+        },
+      },
+    });
+    expect(JSON.parse(http!.payload)).toEqual({
+      mcpServers: {
+        'earthquake-mcp-server': {
+          type: 'streamableHttp',
+          url: 'https://earthquake.caseyjhand.com/mcp',
+        },
+      },
+    });
+    expect(result.installNotice).toBeUndefined();
+    const text = described.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+    for (const snippet of result.installSnippets) expect(text).toContain(snippet.payload);
+    expect(text).toContain('`Cline (cline_mcp_settings.json)`');
+  });
+
+  it('cline returns the stdio snippet alone for a local-only server', async () => {
+    const described = await runToolContract(describeEntryTool, {
+      name: 'mailchimp_list_audiences',
+      client: 'cline',
+    });
+    const { result } = describeEntryTool.output.parse(described.structuredContent);
+    expect(result.kind).toBe('tool');
+    expect(result.installSnippets.map((s) => [s.client, s.transport])).toEqual([
+      ['cline', 'stdio'],
+    ]);
+    expect(JSON.parse(result.installSnippets[0]!.payload)).toEqual({
+      mcpServers: {
+        'mailchimp-mcp-server': {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', '@cyanheads/mailchimp-mcp-server'],
+          env: { MAILCHIMP_API_KEY: '' },
+        },
+      },
+    });
+    expect(result.installNotice).toBeUndefined();
+  });
+
+  it('curl snippet POSTs a legacy 2025-11-25 initialize with both Accept types and no protocol header', async () => {
+    const described = await runToolContract(describeEntryTool, {
       name: 'earthquake-mcp-server',
       kind: 'server',
       client: 'curl',
     });
-    const { result } = await describeEntryTool.handler(input, ctx);
-    if (result.kind === 'server') {
-      // curl is HTTP-only — exactly one snippet.
-      expect(result.installSnippets).toHaveLength(1);
-      const payload = result.installSnippets[0]!.payload;
-      expect(payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
-      expect(payload).toContain('Content-Type: application/json');
-      expect(payload).toContain('MCP-Protocol-Version: 2026-07-28');
-      expect(payload).toContain('"method":"initialize"');
-      expect(payload).toContain('"protocolVersion":"2026-07-28"');
-    }
+    const { result } = describeEntryTool.output.parse(described.structuredContent);
+    expect(result.kind).toBe('server');
+    // curl is HTTP-only — exactly one snippet.
+    expect(result.installSnippets).toHaveLength(1);
+    const payload = result.installSnippets[0]!.payload;
+    expect(payload).toBe(
+      [
+        'curl -X POST https://earthquake.caseyjhand.com/mcp \\',
+        '  -H "Content-Type: application/json" \\',
+        '  -H "Accept: application/json, text/event-stream" \\',
+        `  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1.0.0"}}}'`,
+      ].join('\n'),
+    );
+    const text = described.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+    expect(text).toContain(payload);
   });
 
   it('resolves a local-only server: endpoint absent, stdio-only snippets, env vars surfaced', async () => {
@@ -358,7 +421,7 @@ describe('cyanheads_describe_entry', () => {
       expect(result.tools).toEqual([
         { name: 'mailchimp_list_audiences', description: 'List Mailchimp audiences.' },
       ]);
-      expect(result.installSnippets).toHaveLength(5);
+      expect(result.installSnippets).toHaveLength(6);
       expect(result.installSnippets.every((s) => s.transport === 'stdio')).toBe(true);
       expect(result.installSnippets.some((s) => s.client === 'curl')).toBe(false);
     }
@@ -407,11 +470,11 @@ describe('cyanheads_describe_entry', () => {
 
     expect(result.kind).toBe('server');
     if (result.kind === 'server') {
-      expect(result.installSnippets).toHaveLength(11);
+      expect(result.installSnippets).toHaveLength(13);
       const stdio = result.installSnippets.filter((s) => s.transport === 'stdio');
       const http = result.installSnippets.filter((s) => s.transport === 'http');
-      expect(stdio).toHaveLength(5);
-      expect(http).toHaveLength(6);
+      expect(stdio).toHaveLength(6);
+      expect(http).toHaveLength(7);
     }
   });
 
@@ -522,8 +585,8 @@ describe('cyanheads_describe_entry', () => {
       ]);
       expect(result.toolCount).toBe(2);
 
-      // Hosted record → the full 5 stdio + 6 http snippet set.
-      expect(result.installSnippets).toHaveLength(11);
+      // Hosted record → the full 6 stdio + 7 http snippet set.
+      expect(result.installSnippets).toHaveLength(13);
       const stdio = result.installSnippets.find(
         (s) => s.transport === 'stdio' && s.client === 'claude-code',
       );
@@ -696,5 +759,203 @@ describe('cyanheads_describe_entry — self record superseded by the remote cata
     if (result.kind === 'tool') {
       expect(result.description).toBe(describeEntryTool.description);
     }
+  });
+
+  it('falls back to the self tool the remote entry omits when server names this server', async () => {
+    for (const kind of [undefined, 'tool'] as const) {
+      const result = await runToolContract(describeEntryTool, {
+        name: 'cyanheads_describe_entry',
+        server: 'cyanheads-mcp-server',
+        ...(kind ? { kind } : {}),
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        result: {
+          kind: 'tool',
+          server: 'cyanheads-mcp-server',
+          description: describeEntryTool.description,
+          endpoint: 'https://cyanheads.caseyjhand.com/mcp',
+        },
+      });
+    }
+    const remote = await runToolContract(describeEntryTool, {
+      name: 'cyanheads_search_catalog',
+      server: 'cyanheads-mcp-server',
+    });
+    expect(remote.structuredContent).toMatchObject({
+      result: { description: 'Remote description.', endpoint: 'https://remote.example.com/mcp' },
+    });
+  });
+});
+
+describe('cyanheads_describe_entry — tool names owned by several servers', () => {
+  const [quake, wiki, mailchimp] = FLEET_PAYLOAD.servers as [
+    CatalogRecord,
+    CatalogRecord,
+    CatalogRecord,
+  ];
+  const SHADOW = 'SHADOW copy owned by wikipedia-mcp-server';
+  const shadowWiki: CatalogRecord = {
+    ...wiki,
+    tools: [...wiki.tools, { ...quake.tools[0]!, description: SHADOW }],
+  };
+  /** Payload orders: the copy's owner after the original's, then before it. */
+  const ORDERS = {
+    later: [quake, shadowWiki, mailchimp],
+    earlier: [shadowWiki, quake, mailchimp],
+  } satisfies Record<string, CatalogRecord[]>;
+  const description: Record<string, string> = {
+    'earthquake-mcp-server': quake.tools[0]!.description,
+    'wikipedia-mcp-server': SHADOW,
+  };
+  const text = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+
+  function load(servers: CatalogRecord[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ ...FLEET_PAYLOAD, servers } satisfies FleetPayload),
+      }),
+    );
+    initCatalogService(TEST_CONFIG, makeMockEmbeddings());
+    return getCatalogService().initialize();
+  }
+
+  afterEach(() => {
+    resetCatalogServiceForTests();
+    vi.restoreAllMocks();
+  });
+
+  it.each(Object.keys(ORDERS) as (keyof typeof ORDERS)[])(
+    'describes each owner’s row by name + server, with and without kind (copy %s)',
+    async (order) => {
+      await load(ORDERS[order]);
+      for (const owner of ['earthquake-mcp-server', 'wikipedia-mcp-server']) {
+        const serverResult = await runToolContract(describeEntryTool, { name: owner });
+        const expectedSnippets = describeEntryTool.output.parse(serverResult.structuredContent)
+          .result.installSnippets;
+        for (const kind of [undefined, 'tool'] as const) {
+          const result = await runToolContract(describeEntryTool, {
+            name: 'earthquake_search',
+            server: owner,
+            ...(kind ? { kind } : {}),
+          });
+          expect(result.isError).not.toBe(true);
+          const parsed = describeEntryTool.output.parse(result.structuredContent).result;
+          expect(parsed).toMatchObject({
+            kind: 'tool',
+            name: 'earthquake_search',
+            server: owner,
+            description: description[owner],
+            npm: `@cyanheads/${owner}`,
+          });
+          expect(parsed.installSnippets).toEqual(expectedSnippets);
+          expect(text(result)).toContain(`**Server:** \`${owner}\``);
+          expect(text(result)).toContain(`\`\`\`\n${description[owner]}\n\`\`\``);
+        }
+      }
+    },
+  );
+
+  it.each(
+    (Object.keys(ORDERS) as (keyof typeof ORDERS)[]).flatMap((order) =>
+      ['earthquake_search', 'EARTHQUAKE_SEARCH'].flatMap((name) =>
+        [undefined, 'tool' as const].map((kind) => ({ order, name, kind })),
+      ),
+    ),
+  )(
+    'refuses $name with ambiguous_owner (copy $order, kind $kind)',
+    async ({ order, name, kind }) => {
+      await load(ORDERS[order]);
+      const owners = ORDERS[order].filter((s) =>
+        s.tools.some((t) => t.name === 'earthquake_search'),
+      );
+      const ownerNames = owners.map((s) => s.name);
+      const declared = describeEntryTool.errors!.find((e) => e.reason === 'ambiguous_owner')!;
+      const result = await runToolContract(describeEntryTool, { name, ...(kind ? { kind } : {}) });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          data: {
+            reason: 'ambiguous_owner',
+            owners: ownerNames,
+            recovery: { hint: declared.recovery },
+          },
+        },
+      });
+      expect(text(result)).toContain(
+        `Tool "earthquake_search" has 2 owners: ${ownerNames.join(', ')}`,
+      );
+      expect(text(result)).toContain('(reason ambiguous_owner');
+    },
+  );
+
+  it('resolves a case variant of the name and server within the named owner', async () => {
+    await load(ORDERS.later);
+    const result = await runToolContract(describeEntryTool, {
+      name: 'EARTHQUAKE_SEARCH',
+      server: 'Wikipedia-MCP-Server',
+    });
+    expect(result.structuredContent).toMatchObject({
+      result: { name: 'earthquake_search', server: 'wikipedia-mcp-server', description: SHADOW },
+    });
+  });
+
+  it.each([
+    { name: 'earthquake_search', server: 'nonexistent-mcp-server' },
+    { name: 'wikipedia_search', server: 'earthquake-mcp-server' },
+    { name: 'wikipedia_search', server: 'earthquake-mcp-server', kind: 'tool' as const },
+    { name: 'earthquake-mcp-server', server: 'wikipedia-mcp-server' },
+    { name: 'earthquake-mcp-server', server: 'wikipedia-mcp-server', kind: 'server' as const },
+    { name: 'cyanheads_search_catalog', server: 'earthquake-mcp-server' },
+  ])('returns not_found for $name under server $server (kind $kind)', async (input) => {
+    await load(ORDERS.later);
+    const result = await runToolContract(describeEntryTool, input);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.NotFound, data: { reason: 'not_found' } },
+    });
+    expect(text(result)).toContain(
+      `No tool or server named "${input.name}" under server "${input.server}" in the catalog`,
+    );
+  });
+
+  it('describes a server when server names the same server', async () => {
+    await load(ORDERS.later);
+    for (const input of [
+      { name: 'wikipedia-mcp-server', server: 'wikipedia-mcp-server' },
+      { name: 'wikipedia-mcp-server', server: 'WIKIPEDIA-MCP-SERVER', kind: 'server' as const },
+      { name: 'cyanheads-mcp-server', server: 'cyanheads-mcp-server' },
+    ]) {
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        result: { kind: 'server', name: input.name },
+      });
+    }
+  });
+
+  it('keeps a remote row with a self-tool name winning bare-name lookups while server reaches the self tool', async () => {
+    const impostor: CatalogRecord = {
+      ...wiki,
+      tools: [{ name: 'cyanheads_describe_entry', description: 'Impostor.', embedding: E1 }],
+    };
+    await load([quake, impostor]);
+    const bare = await runToolContract(describeEntryTool, { name: 'cyanheads_describe_entry' });
+    expect(bare.structuredContent).toMatchObject({
+      result: { server: 'wikipedia-mcp-server', description: 'Impostor.' },
+    });
+    const self = await runToolContract(describeEntryTool, {
+      name: 'cyanheads_describe_entry',
+      server: 'cyanheads-mcp-server',
+    });
+    expect(self.structuredContent).toMatchObject({
+      result: { server: 'cyanheads-mcp-server', description: describeEntryTool.description },
+    });
   });
 });

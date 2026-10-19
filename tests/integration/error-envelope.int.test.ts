@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { describeEntryTool } from '@/mcp-server/tools/definitions/describe-entry.tool.js';
 import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
 import { setCatalogService } from '@/services/catalog/service-instance.js';
-import type { ICatalogService } from '@/services/catalog/types.js';
+import type { CatalogToolEntry, ICatalogService } from '@/services/catalog/types.js';
 import { createCatalogServiceFake } from '../fixtures/catalog-service.js';
 
 setCatalogService(createCatalogServiceFake());
@@ -142,33 +142,77 @@ describe('declared contract reasons', () => {
         embedding: [1, 0],
         tools: [],
       }),
-      getTool: () => ({
-        name: 'collision',
-        description: 'Resolves as both.',
-        embedding: [1, 0],
-        serverRecord: {
+      getTool: () => [
+        {
           name: 'collision',
-          displayName: 'Collision',
           description: 'Resolves as both.',
-          category: 'utility',
-          npm: '@cyanheads/collision',
-          github: 'https://github.com/cyanheads/collision',
-          version: '1.0.0',
-          auth: 'none',
           embedding: [1, 0],
-          tools: [],
+          serverRecord: {
+            name: 'collision',
+            displayName: 'Collision',
+            description: 'Resolves as both.',
+            category: 'utility',
+            npm: '@cyanheads/collision',
+            github: 'https://github.com/cyanheads/collision',
+            version: '1.0.0',
+            auth: 'none',
+            embedding: [1, 0],
+            tools: [],
+          },
         },
-      }),
+      ],
     };
     setCatalogService(bothFake);
     try {
       const result = await runToolContract(describeEntryTool, { name: 'collision' });
+      const hint = 'Set the kind parameter to "tool" or "server" to disambiguate.';
 
       expect(errorOf(result)?.data?.reason).toBe('ambiguous_kind');
-      expect((errorOf(result)?.data?.recovery as { hint?: string } | undefined)?.hint).toContain(
-        'kind',
-      );
+      expect(errorOf(result)?.data?.recovery).toEqual({ hint });
+      expect(textOf(result).split('\n')).toContain(`Recovery: ${hint}`);
       expect(textOf(result)).toContain('(reason ambiguous_kind');
+    } finally {
+      setCatalogService(createCatalogServiceFake());
+    }
+  });
+
+  it('carries ambiguous_owner with the owners and its declared recovery hint on both surfaces', async () => {
+    const owned = (server: string): CatalogToolEntry => ({
+      name: 'shared_tool',
+      description: `Copy owned by ${server}.`,
+      embedding: [1, 0],
+      serverRecord: {
+        name: server,
+        displayName: server,
+        description: 'Owns shared_tool.',
+        category: 'utility',
+        npm: `@cyanheads/${server}`,
+        github: `https://github.com/cyanheads/${server}`,
+        version: '1.0.0',
+        auth: 'none',
+        embedding: [1, 0],
+        tools: [],
+      },
+    });
+    setCatalogService({
+      ...createCatalogServiceFake(),
+      getTool: (_name, server) =>
+        server === undefined ? [owned('alpha-mcp-server'), owned('beta-mcp-server')] : [],
+    });
+    try {
+      const result = await runToolContract(describeEntryTool, { name: 'shared_tool' });
+      const hint =
+        'Set server to the owning server you want, one of the owners the error lists — the server value cyanheads_search_catalog returned with this tool.';
+
+      expect(errorOf(result)?.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(errorOf(result)?.data?.reason).toBe('ambiguous_owner');
+      expect(errorOf(result)?.data?.owners).toEqual(['alpha-mcp-server', 'beta-mcp-server']);
+      expect(errorOf(result)?.data?.recovery).toEqual({ hint });
+      expect(textOf(result)).toMatch(
+        /^Error: Tool "shared_tool" has 2 owners: alpha-mcp-server, beta-mcp-server\n/,
+      );
+      expect(textOf(result).split('\n')).toContain(`Recovery: ${hint}`);
+      expect(textOf(result)).toContain('(reason ambiguous_owner');
     } finally {
       setCatalogService(createCatalogServiceFake());
     }

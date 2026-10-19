@@ -1,12 +1,23 @@
 /**
  * @fileoverview Shared types for the catalog service — CatalogRecord, CatalogTool,
- * FleetPayload (v2 with baked embeddings), InstallSnippet, ClientId,
- * and the service interface.
+ * CatalogToolEntry, FleetPayload (v2 with baked embeddings), InstallSnippet,
+ * ClientId with its CLIENT_IDS list, and the service interface.
  * @module services/catalog/types
  */
 
-/** Supported MCP client identifiers for install snippets. */
-export type ClientId = 'claude-code' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http';
+/** Supported MCP client identifiers for install snippets — the one list the tool schemas enumerate. */
+export const CLIENT_IDS = [
+  'claude-code',
+  'cline',
+  'codex',
+  'cursor',
+  'curl',
+  'gemini',
+  'streamable-http',
+] as const;
+
+/** Supported MCP client identifier for install snippets. */
+export type ClientId = (typeof CLIENT_IDS)[number];
 
 /** Catalog category for a fleet server. */
 export type CatalogCategory = 'research' | 'government' | 'public-data' | 'utility';
@@ -16,13 +27,18 @@ export interface CatalogTool {
   /** Human-readable description. */
   description: string;
   /**
-   * L2-normalized, Matryoshka-truncated embedding vector.
-   * Length matches FleetPayload.embeddingDims.
+   * Matryoshka-truncated embedding vector, L2-normalized by the producer.
+   * Length matches FleetPayload.embeddingDims. The service normalizes it in
+   * float64 at load and rejects a payload whose vector is all zeros; schema
+   * validation rejects a non-finite component.
    */
   embedding: number[];
   /** Fully-qualified name: snake_case (e.g. "earthquake_search"). */
   name: string;
 }
+
+/** One tool row with the server record that owns it. */
+export type CatalogToolEntry = CatalogTool & { serverRecord: CatalogRecord };
 
 /** Per-client install snippet for one transport. */
 export interface InstallSnippet {
@@ -33,11 +49,12 @@ export interface InstallSnippet {
   /**
    * The install payload. Shape varies by client and transport:
    * - claude-code: CLI — stdio `claude mcp add --transport stdio <name> -- npx -y <pkg>`; http `claude mcp add --transport http <name> <url>`
+   * - cline: `cline_mcp_settings.json` JSON — stdio `{ type: 'stdio', command, args }`; http `{ type: 'streamableHttp', url }`
    * - codex: CLI — stdio `codex mcp add <name> -- npx -y <pkg>`; http `codex mcp add <name> --url <url>`
    * - cursor: `mcpServers` JSON, no `type` field — stdio `{ command, args }`; http `{ url }`
    * - gemini: CLI — stdio `gemini mcp add <name> npx -y <pkg>`; http `gemini mcp add --transport http <name> <url>`
    * - streamable-http: generic `mcpServers` JSON with `type` — stdio `{ type: 'stdio', command, args }`; http `{ type: 'http', url }`
-   * - curl: http only — `initialize` connectivity probe against the endpoint
+   * - curl: http only — legacy `initialize` connectivity probe against the endpoint
    */
   payload: string;
   /**
@@ -62,8 +79,9 @@ export interface CatalogRecord {
   /** Human label (e.g. "arXiv"). */
   displayName: string;
   /**
-   * L2-normalized, Matryoshka-truncated embedding vector of
-   * `${displayName}\n${description}`. Length matches FleetPayload.embeddingDims.
+   * Matryoshka-truncated embedding vector of `${displayName}\n${description}`,
+   * L2-normalized by the producer. Length matches FleetPayload.embeddingDims.
+   * Normalized in float64 at load, like each tool vector.
    */
   embedding: number[];
   /**
@@ -127,8 +145,15 @@ export interface ICatalogService {
   /** Exact remote name, then unique case-insensitive remote name, then self fallback. Ambiguous folds return null. */
   getServer(name: string): CatalogRecord | null;
 
-  /** Exact remote name, then unique case-insensitive remote name, then self fallback. Ambiguous folds return null. */
-  getTool(name: string): (CatalogTool & { serverRecord: CatalogRecord }) | null;
+  /**
+   * Every tool row the name resolves to, in payload order. Without `server`:
+   * every owner of the exact name, else every owner of a case-insensitive
+   * match that has one spelling, else the self tool. Case-insensitive matches
+   * with several spellings return none. With `server` (resolved like
+   * `getServer`): that owner's exact name, else its unique case-insensitive
+   * match, else the self tool when the owner is this server.
+   */
+  getTool(name: string, server?: string): CatalogToolEntry[];
 
   /**
    * Fetch fleet.json, validate, build the vector index, and load the embedding model.

@@ -6,10 +6,11 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CatalogService } from '@/services/catalog/catalog-service.js';
 import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
-import type { FleetPayload } from '@/services/catalog/types.js';
+import type { CatalogRecord, FleetPayload } from '@/services/catalog/types.js';
 
 // ---------------------------------------------------------------------------
 // Deterministic test vectors (4-dim, L2-normalized basis vectors)
@@ -172,10 +173,10 @@ describe('CatalogService', () => {
     it('indexes tools with serverRecord pointers', async () => {
       mockFetchOk(MINIMAL_PAYLOAD);
       await service.initialize();
-      const tool = service.getTool('earthquake_search');
-      expect(tool).not.toBeNull();
-      expect(tool!.name).toBe('earthquake_search');
-      expect(tool!.serverRecord.name).toBe('earthquake-mcp-server');
+      const candidates = service.getTool('earthquake_search');
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.name).toBe('earthquake_search');
+      expect(candidates[0]!.serverRecord.name).toBe('earthquake-mcp-server');
     });
   });
 
@@ -349,8 +350,8 @@ describe('CatalogService', () => {
       expect(service.getServer('unknown-server')).toBeNull();
     });
 
-    it('returns null for an unknown tool', () => {
-      expect(service.getTool('nonexistent_tool')).toBeNull();
+    it('returns no candidate for an unknown tool', () => {
+      expect(service.getTool('nonexistent_tool')).toEqual([]);
     });
 
     it('falls back to the self record for this server, absent from the remote payload', () => {
@@ -368,10 +369,12 @@ describe('CatalogService', () => {
 
     it('falls back to the self record for this server’s own tools', () => {
       for (const name of ['cyanheads_search_catalog', 'cyanheads_describe_entry']) {
-        const tool = service.getTool(name);
-        expect(tool).not.toBeNull();
-        expect(tool!.name).toBe(name);
-        expect(tool!.serverRecord.name).toBe('cyanheads-mcp-server');
+        for (const server of [undefined, 'cyanheads-mcp-server', 'CYANHEADS-MCP-SERVER']) {
+          const candidates = service.getTool(name, server);
+          expect(candidates).toHaveLength(1);
+          expect(candidates[0]!.name).toBe(name);
+          expect(candidates[0]!.serverRecord.name).toBe('cyanheads-mcp-server');
+        }
       }
     });
 
@@ -444,18 +447,30 @@ describe('CatalogService', () => {
       mockFetchOk(PAYLOAD_WITH_SELF);
       await service.initialize();
 
-      const tool = service.getTool('cyanheads_search_catalog');
-      expect(tool!.description).toBe('Remote-catalog tool description.');
-      expect(tool!.serverRecord.version).toBe('99.0.0');
+      for (const server of [undefined, 'cyanheads-mcp-server']) {
+        const candidates = service.getTool('cyanheads_search_catalog', server);
+        expect(candidates).toHaveLength(1);
+        expect(candidates[0]!.description).toBe('Remote-catalog tool description.');
+        expect(candidates[0]!.serverRecord.version).toBe('99.0.0');
+      }
     });
 
-    it('still falls back for a tool the remote entry omits', async () => {
+    it('still falls back for a tool the remote entry omits, with or without server', async () => {
       mockFetchOk(PAYLOAD_WITH_SELF);
       await service.initialize();
 
-      const tool = service.getTool('cyanheads_describe_entry');
-      expect(tool).not.toBeNull();
-      expect(tool!.serverRecord.version).not.toBe('99.0.0');
+      for (const server of [undefined, 'cyanheads-mcp-server']) {
+        const candidates = service.getTool('cyanheads_describe_entry', server);
+        expect(
+          candidates.map((t) => [t.name, t.serverRecord.name, t.serverRecord.endpoint]),
+        ).toEqual([
+          [
+            'cyanheads_describe_entry',
+            'cyanheads-mcp-server',
+            'https://cyanheads.caseyjhand.com/mcp',
+          ],
+        ]);
+      }
     });
 
     it('re-resolves precedence after a background refresh adds the remote entry', async () => {
@@ -475,6 +490,123 @@ describe('CatalogService', () => {
 
       expect(service.getServer('cyanheads-mcp-server')!.version).toBe('99.0.0');
       vi.useRealTimers();
+    });
+  });
+
+  describe('owner-aware tool lookups', () => {
+    const [quake, arxiv] = MINIMAL_PAYLOAD.servers as [CatalogRecord, CatalogRecord];
+    const shadow = { ...quake.tools[0]!, description: 'Shadow copy owned by arxiv-mcp-server.' };
+    const owners = (rows: { serverRecord: CatalogRecord }[]) =>
+      rows.map((r) => r.serverRecord.name);
+
+    /** Both servers own earthquake_search; the copy's owner sits later or earlier in payload order. */
+    function shared(order: 'later' | 'earlier', generatedAt = MINIMAL_PAYLOAD.generatedAt) {
+      const withCopy = { ...arxiv, tools: [...arxiv.tools, shadow] };
+      return {
+        ...MINIMAL_PAYLOAD,
+        generatedAt,
+        servers: order === 'later' ? [quake, withCopy] : [withCopy, quake],
+      } satisfies FleetPayload;
+    }
+
+    it.each(['later', 'earlier'] as const)(
+      'returns every owner of a shared name in payload order (copy %s)',
+      async (order) => {
+        mockFetchOk(shared(order));
+        await service.initialize();
+        const expected =
+          order === 'later'
+            ? ['earthquake-mcp-server', 'arxiv-mcp-server']
+            : ['arxiv-mcp-server', 'earthquake-mcp-server'];
+        for (const name of ['earthquake_search', 'EARTHQUAKE_SEARCH']) {
+          const candidates = service.getTool(name);
+          expect(owners(candidates)).toEqual(expected);
+          expect(candidates.map((t) => t.name)).toEqual(['earthquake_search', 'earthquake_search']);
+        }
+      },
+    );
+
+    it('narrows to the named owner by exact name, then unique case-fold', async () => {
+      mockFetchOk(shared('later'));
+      await service.initialize();
+      const arxivRecord = service.getServer('arxiv-mcp-server')!;
+      for (const name of ['earthquake_search', 'Earthquake_Search']) {
+        for (const server of ['arxiv-mcp-server', 'ARXIV-MCP-SERVER']) {
+          expect(service.getTool(name, server)).toEqual([{ ...shadow, serverRecord: arxivRecord }]);
+        }
+      }
+      expect(
+        service.getTool('earthquake_search', 'earthquake-mcp-server').map((t) => t.description),
+      ).toEqual([quake.tools[0]!.description]);
+    });
+
+    it('returns no candidate for an unknown server or one that does not own the name', async () => {
+      mockFetchOk(shared('later'));
+      await service.initialize();
+      expect(service.getTool('earthquake_search', 'nonexistent-mcp-server')).toEqual([]);
+      expect(service.getTool('arxiv_search', 'earthquake-mcp-server')).toEqual([]);
+      expect(service.getTool('cyanheads_search_catalog', 'earthquake-mcp-server')).toEqual([]);
+    });
+
+    it('leaves differing-spelling folds unresolved without server and resolves them with it', async () => {
+      mockFetchOk({
+        ...MINIMAL_PAYLOAD,
+        servers: [quake, { ...arxiv, tools: [{ ...shadow, name: 'EARTHQUAKE_SEARCH' }] }],
+      });
+      await service.initialize();
+      expect(service.getTool('Earthquake_Search')).toEqual([]);
+      expect(owners(service.getTool('earthquake_search'))).toEqual(['earthquake-mcp-server']);
+      expect(owners(service.getTool('EARTHQUAKE_SEARCH'))).toEqual(['arxiv-mcp-server']);
+      expect(service.getTool('Earthquake_Search', 'arxiv-mcp-server').map((t) => t.name)).toEqual([
+        'EARTHQUAKE_SEARCH',
+      ]);
+    });
+
+    it('keeps a remote self-tool name winning bare lookups while server reaches the self tool', async () => {
+      mockFetchOk({
+        ...MINIMAL_PAYLOAD,
+        servers: [quake, { ...arxiv, tools: [{ ...shadow, name: 'cyanheads_describe_entry' }] }],
+      });
+      await service.initialize();
+      expect(owners(service.getTool('cyanheads_describe_entry'))).toEqual(['arxiv-mcp-server']);
+      expect(owners(service.getTool('cyanheads_describe_entry', 'cyanheads-mcp-server'))).toEqual([
+        'cyanheads-mcp-server',
+      ]);
+    });
+
+    it('rebuilds lookups on refresh and keeps them when a refresh is rejected', async () => {
+      vi.useFakeTimers();
+      service.shutdown();
+      service = new CatalogService(
+        { ...TEST_CONFIG, catalogRefreshSeconds: 1 },
+        makeMockEmbeddings({}),
+      );
+      try {
+        mockFetchOk(MINIMAL_PAYLOAD);
+        await service.initialize();
+        expect(owners(service.getTool('earthquake_search'))).toEqual(['earthquake-mcp-server']);
+
+        mockFetchOk(shared('later', '2026-05-29T00:00:00Z'));
+        await vi.advanceTimersByTimeAsync(1100);
+        expect(owners(service.getTool('earthquake_search'))).toEqual([
+          'earthquake-mcp-server',
+          'arxiv-mcp-server',
+        ]);
+
+        const rejected = shared('earlier', '2026-05-30T00:00:00Z');
+        rejected.servers[0] = { ...rejected.servers[0]!, embedding: [0, 0, 0, 0] };
+        mockFetchOk(rejected);
+        await vi.advanceTimersByTimeAsync(1100);
+        expect(owners(service.getTool('earthquake_search'))).toEqual([
+          'earthquake-mcp-server',
+          'arxiv-mcp-server',
+        ]);
+        expect(service.getTool('earthquake_search', 'arxiv-mcp-server')[0]!.description).toBe(
+          shadow.description,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -615,6 +747,250 @@ describe('CatalogService', () => {
       await vi.advanceTimersByTimeAsync(1100);
 
       expect(service.stats().serverCount).toBe(2);
+    });
+  });
+
+  describe('vector normalization', () => {
+    const UNIT = [0.6, 0.8, 0, 0];
+    const COSINE = 1.4 / Math.SQRT2; // UNIT · normalize([1, 1, 0, 0])
+    const scaled = (v: number[], s: number) => v.map((x) => x * s);
+    const queries = { mixed: [1, 1, 0, 0], quake: E0, arxiv: E1 };
+
+    /** MINIMAL_PAYLOAD with the earthquake server vector and its earthquake_search vector replaced. */
+    function withEarthquakeVectors(
+      serverVec: number[],
+      toolVec: number[],
+      generatedAt = MINIMAL_PAYLOAD.generatedAt,
+    ): FleetPayload {
+      const [quake, arxiv] = MINIMAL_PAYLOAD.servers;
+      return {
+        ...MINIMAL_PAYLOAD,
+        generatedAt,
+        servers: [
+          {
+            ...quake!,
+            embedding: serverVec,
+            tools: [{ ...quake!.tools[0]!, embedding: toolVec }, quake!.tools[1]!],
+          },
+          arxiv!,
+        ],
+      };
+    }
+
+    const UNNORMALIZABLE = [
+      {
+        defect: 'zero-norm tool vector',
+        server: E0,
+        tool: [0, 0, 0, 0],
+        message:
+          'Tool "earthquake-mcp-server/earthquake_search" embedding cannot be normalized: its norm is 0.',
+      },
+      {
+        defect: 'zero-norm server vector',
+        server: [0, 0, 0, 0],
+        tool: E0,
+        message: 'Server "earthquake-mcp-server" embedding cannot be normalized: its norm is 0.',
+      },
+      {
+        defect: 'non-finite tool vector component',
+        server: E0,
+        tool: [Number.POSITIVE_INFINITY, 0, 0, 0],
+        message:
+          'Catalog payload failed validation at servers.0.tools.0.embedding.0: Invalid input: expected number, received Infinity',
+      },
+      {
+        defect: 'non-finite server vector component',
+        server: [Number.NaN, 0, 0, 0],
+        tool: E0,
+        message:
+          'Catalog payload failed validation at servers.0.embedding.0: Invalid input: expected number, received NaN',
+      },
+      {
+        defect: 'wrong-dimension tool vector',
+        server: E0,
+        tool: [1, 0, 0],
+        message: 'Tool "earthquake-mcp-server/earthquake_search" embedding has 3 dims; expected 4.',
+      },
+      {
+        defect: 'wrong-dimension server vector',
+        server: [1, 0, 0],
+        tool: E0,
+        message: 'Server "earthquake-mcp-server" embedding has 3 dims; expected 4.',
+      },
+    ];
+
+    // 1e200 and 1e-200 square past float64 range; 1e-160 squares into subnormals.
+    it.each([10, 0.1, 1e200, 1e-160, 1e-200])(
+      'scores tool and server vectors scaled ×%s as the cosine of their direction',
+      async (s) => {
+        service = new CatalogService(TEST_CONFIG, makeMockEmbeddings(queries));
+        mockFetchOk(withEarthquakeVectors(scaled(UNIT, s), scaled(UNIT, s)));
+        await service.initialize();
+
+        const tools = await service.search({ query: 'mixed', scope: 'tools' });
+        expect(tools.find((r) => r.name === 'earthquake_search')?.score).toBeCloseTo(COSINE, 6);
+        const servers = await service.search({ query: 'mixed', scope: 'servers' });
+        expect(servers.find((r) => r.name === 'earthquake-mcp-server')?.score).toBeCloseTo(
+          COSINE,
+          6,
+        );
+
+        // A scaled server vector no longer outranks the server the query is about.
+        const ranked = await service.search({ query: 'arxiv', scope: 'servers' });
+        expect(ranked.map((r) => r.name)).toEqual(['arxiv-mcp-server', 'earthquake-mcp-server']);
+        expect(ranked[1]!.score).toBeCloseTo(0.8, 6);
+      },
+    );
+
+    it('packs float32-overflow components as finite unit rows', async () => {
+      service = new CatalogService(TEST_CONFIG, makeMockEmbeddings(queries));
+      mockFetchOk(withEarthquakeVectors([1e39, 0, 0, 0], [1e39, 1, 0, 0]));
+      await service.initialize();
+
+      for (const query of Object.keys(queries)) {
+        for (const scope of ['tools', 'servers'] as const) {
+          const rows = await service.search({ query, scope });
+          expect(rows.every((r) => Number.isFinite(r.score))).toBe(true);
+        }
+      }
+      const [top] = await service.search({ query: 'quake', scope: 'tools' });
+      expect(top).toMatchObject({ name: 'earthquake_search', server: 'earthquake-mcp-server' });
+      expect(top!.score).toBeCloseTo(1, 6);
+    });
+
+    it('normalizes drift within tolerance without a warning', async () => {
+      const warning = vi.spyOn(logger, 'warning');
+      service = new CatalogService(TEST_CONFIG, makeMockEmbeddings(queries));
+      mockFetchOk(withEarthquakeVectors([1 + 5e-5, 0, 0, 0], [1 - 5e-5, 0, 0, 0]));
+      await service.initialize();
+
+      expect(warning).not.toHaveBeenCalled();
+      const [tool] = await service.search({ query: 'quake', scope: 'tools' });
+      expect(tool!.score).toBeCloseTo(1, 6);
+      const [server] = await service.search({ query: 'quake', scope: 'servers' });
+      expect(server!.score).toBeCloseTo(1, 6);
+    });
+
+    it('warns for drift just past tolerance', async () => {
+      const warning = vi.spyOn(logger, 'warning');
+      mockFetchOk(withEarthquakeVectors(E0, [1 + 2e-4, 0, 0, 0]));
+      await service.initialize();
+      expect(warning).toHaveBeenCalledExactlyOnceWith(
+        'Normalized 1 catalog vectors whose norm deviates from 1 by more than 0.0001 (largest deviation 0.0002000): ["earthquake-mcp-server/earthquake_search"]',
+      );
+    });
+
+    it('logs one bounded warning naming at most ten drifting vectors', async () => {
+      const warning = vi.spyOn(logger, 'warning');
+      const [quake, arxiv] = MINIMAL_PAYLOAD.servers;
+      const tools = Array.from({ length: 12 }, (_, i) => ({
+        name: `drift_${String(i).padStart(2, '0')}`,
+        description: 'Drifting vector.',
+        embedding: [2, 0, 0, 0],
+      }));
+      mockFetchOk({
+        ...MINIMAL_PAYLOAD,
+        servers: [{ ...quake!, embedding: [0, 0.5, 0, 0], tools }, arxiv!],
+      });
+      await service.initialize();
+
+      expect(warning).toHaveBeenCalledOnce();
+      const message = warning.mock.calls[0]![0];
+      expect(message.slice(0, message.indexOf('['))).toBe(
+        'Normalized 13 catalog vectors whose norm deviates from 1 by more than 0.0001 (largest deviation 1.000): ',
+      );
+      expect(JSON.parse(message.slice(message.indexOf('[')))).toEqual([
+        'earthquake-mcp-server',
+        ...tools.slice(0, 9).map((t) => `earthquake-mcp-server/${t.name}`),
+      ]);
+    });
+
+    it.each(UNNORMALIZABLE)(
+      'rejects a startup payload with a $defect',
+      async ({ server, tool, message }) => {
+        mockFetchOk(withEarthquakeVectors(server, tool));
+        await expect(service.initialize()).rejects.toThrow(message);
+      },
+    );
+
+    describe('on refresh', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        service.shutdown();
+        service = new CatalogService(
+          { ...TEST_CONFIG, catalogRefreshSeconds: 1 },
+          makeMockEmbeddings(queries),
+        );
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('normalizes a scaled refresh payload before the swap', async () => {
+        mockFetchOk(MINIMAL_PAYLOAD);
+        await service.initialize();
+        const initial = service.stats().initializedAt;
+
+        mockFetchOk(
+          withEarthquakeVectors(scaled(UNIT, 10), scaled(UNIT, 10), '2026-05-29T00:00:00Z'),
+        );
+        await vi.advanceTimersByTimeAsync(1100);
+
+        expect(service.stats().initializedAt).not.toBe(initial);
+        const tools = await service.search({ query: 'mixed', scope: 'tools' });
+        expect(tools.find((r) => r.name === 'earthquake_search')?.score).toBeCloseTo(COSINE, 6);
+        const servers = await service.search({ query: 'mixed', scope: 'servers' });
+        expect(servers.find((r) => r.name === 'earthquake-mcp-server')?.score).toBeCloseTo(
+          COSINE,
+          6,
+        );
+      });
+
+      it('normalizes a refresh payload whose squared components leave float64 range', async () => {
+        mockFetchOk(MINIMAL_PAYLOAD);
+        await service.initialize();
+
+        mockFetchOk(
+          withEarthquakeVectors(scaled(UNIT, 1e200), scaled(UNIT, 1e-200), '2026-05-29T00:00:00Z'),
+        );
+        await vi.advanceTimersByTimeAsync(1100);
+
+        const tools = await service.search({ query: 'mixed', scope: 'tools' });
+        expect(tools.find((r) => r.name === 'earthquake_search')?.score).toBeCloseTo(COSINE, 6);
+        const servers = await service.search({ query: 'mixed', scope: 'servers' });
+        expect(servers.find((r) => r.name === 'earthquake-mcp-server')?.score).toBeCloseTo(
+          COSINE,
+          6,
+        );
+      });
+
+      it.each(UNNORMALIZABLE)(
+        'keeps the previous index, stats, and lookups when a refresh carries a $defect',
+        async ({ server, tool, message }) => {
+          mockFetchOk(MINIMAL_PAYLOAD);
+          await service.initialize();
+          const stats = service.stats();
+          const rows = {
+            tools: await service.search({ query: 'quake', scope: 'tools' }),
+            servers: await service.search({ query: 'quake', scope: 'servers' }),
+          };
+          const record = service.getServer('earthquake-mcp-server');
+          const warning = vi.spyOn(logger, 'warning');
+
+          mockFetchOk(withEarthquakeVectors(server, tool, '2026-05-29T00:00:00Z'));
+          await vi.advanceTimersByTimeAsync(1100);
+
+          expect(service.stats()).toEqual(stats);
+          expect(await service.search({ query: 'quake', scope: 'tools' })).toEqual(rows.tools);
+          expect(await service.search({ query: 'quake', scope: 'servers' })).toEqual(rows.servers);
+          expect(service.getServer('earthquake-mcp-server')).toBe(record);
+          expect(warning).toHaveBeenCalledOnce();
+          expect(warning.mock.calls[0]![0]).toBe(
+            `Catalog refresh failed; keeping last-known state. ${message}`,
+          );
+        },
+      );
     });
   });
 });

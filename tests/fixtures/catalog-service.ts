@@ -41,10 +41,10 @@ const TEST_RESULT: CatalogSearchResult = {
 export function createCatalogServiceFake(): ICatalogService {
   return {
     getServer: (name) => (name === TEST_SERVER.name ? TEST_SERVER : null),
-    getTool: (name) =>
-      name === TEST_SERVER.tools[0]!.name
-        ? { ...TEST_SERVER.tools[0]!, serverRecord: TEST_SERVER }
-        : null,
+    getTool: (name, server) =>
+      name === TEST_SERVER.tools[0]!.name && (server === undefined || server === TEST_SERVER.name)
+        ? [{ ...TEST_SERVER.tools[0]!, serverRecord: TEST_SERVER }]
+        : [],
     async initialize() {},
     listCategories: () => [TEST_SERVER.category],
     async search({ query }) {

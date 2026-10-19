@@ -22,8 +22,13 @@ type StdioFactory = (record: CatalogRecord) => InstallSnippet;
 /** Factory for a remote (HTTP) snippet — needs the resolved hosted endpoint. */
 type HttpFactory = (record: CatalogRecord, endpoint: string) => InstallSnippet;
 
-/** MCP protocol version pinned in the curl `initialize` snippet. */
-const CURL_MCP_PROTOCOL_VERSION = '2026-07-28';
+/**
+ * Protocol version in the curl probe's legacy `initialize` body: the latest
+ * revision that opens with `initialize`. The probe sends no `MCP-Protocol-Version`
+ * header — the spec requires it only after initialization, and a 2026-era header
+ * on an `initialize` is rejected as a header/body mismatch.
+ */
+const CURL_INITIALIZE_PROTOCOL_VERSION = '2025-11-25';
 
 /**
  * `env` block for a JSON config snippet — one empty-valued key per required var.
@@ -40,12 +45,39 @@ function envBlock(record: CatalogRecord): { env?: Record<string, string> } {
 // Local (stdio) factories — built from record.npm via `npx -y <pkg>`
 // ---------------------------------------------------------------------------
 
+/** `mcpServers` JSON with an explicit `type: 'stdio'` — the local shape Cline and Claude Desktop both load. */
+function typedStdioConfig(record: CatalogRecord): string {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        [record.name]: {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', record.npm],
+          ...envBlock(record),
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
 function claudeCodeStdio(record: CatalogRecord): InstallSnippet {
   return {
     client: 'claude-code',
     transport: 'stdio',
     label: 'Claude Code (CLI)',
     payload: `claude mcp add --transport stdio ${record.name} -- npx -y ${record.npm}`,
+  };
+}
+
+function clineStdio(record: CatalogRecord): InstallSnippet {
+  return {
+    client: 'cline',
+    transport: 'stdio',
+    label: 'Cline (cline_mcp_settings.json)',
+    payload: typedStdioConfig(record),
   };
 }
 
@@ -84,26 +116,13 @@ function geminiStdio(record: CatalogRecord): InstallSnippet {
   };
 }
 
-/** Generic `mcpServers` JSON (stdio) for Claude Desktop, Cline, and other MCP clients. */
+/** Generic `mcpServers` JSON (stdio) for Claude Desktop and other MCP clients. */
 function genericStdio(record: CatalogRecord): InstallSnippet {
   return {
     client: 'streamable-http',
     transport: 'stdio',
-    label: 'Claude Desktop / Cline / generic',
-    payload: JSON.stringify(
-      {
-        mcpServers: {
-          [record.name]: {
-            type: 'stdio',
-            command: 'npx',
-            args: ['-y', record.npm],
-            ...envBlock(record),
-          },
-        },
-      },
-      null,
-      2,
-    ),
+    label: 'Claude Desktop / generic',
+    payload: typedStdioConfig(record),
   };
 }
 
@@ -117,6 +136,20 @@ function claudeCodeHttp(record: CatalogRecord, endpoint: string): InstallSnippet
     transport: 'http',
     label: 'Claude Code (CLI)',
     payload: `claude mcp add --transport http ${record.name} ${endpoint}`,
+  };
+}
+
+/** Cline reads Streamable HTTP only under `type: 'streamableHttp'`; a URL entry with no `type` falls back to SSE. */
+function clineHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
+  return {
+    client: 'cline',
+    transport: 'http',
+    label: 'Cline (cline_mcp_settings.json)',
+    payload: JSON.stringify(
+      { mcpServers: { [record.name]: { type: 'streamableHttp', url: endpoint } } },
+      null,
+      2,
+    ),
   };
 }
 
@@ -144,7 +177,7 @@ function curlHttp(_record: CatalogRecord, endpoint: string): InstallSnippet {
     id: 1,
     method: 'initialize',
     params: {
-      protocolVersion: CURL_MCP_PROTOCOL_VERSION,
+      protocolVersion: CURL_INITIALIZE_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: 'curl', version: '1.0.0' },
     },
@@ -156,7 +189,7 @@ function curlHttp(_record: CatalogRecord, endpoint: string): InstallSnippet {
     payload: [
       `curl -X POST ${endpoint} \\`,
       `  -H "Content-Type: application/json" \\`,
-      `  -H "MCP-Protocol-Version: ${CURL_MCP_PROTOCOL_VERSION}" \\`,
+      `  -H "Accept: application/json, text/event-stream" \\`,
       `  -d '${body}'`,
     ].join('\n'),
   };
@@ -171,12 +204,16 @@ function geminiHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
   };
 }
 
-/** Generic `mcpServers` JSON (Streamable HTTP) for Claude Desktop, Cline, mcp-remote. */
+/**
+ * Generic `mcpServers` JSON (Streamable HTTP, `type: 'http'`). Its label names no
+ * client: Claude Desktop adds remote servers through its Connectors settings rather
+ * than this file, and Cline needs the `streamableHttp` type its own snippet carries.
+ */
 function genericHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
   return {
     client: 'streamable-http',
     transport: 'http',
-    label: 'Claude Desktop / Cline / generic',
+    label: 'Generic (mcpServers JSON)',
     payload: JSON.stringify(
       { mcpServers: { [record.name]: { type: 'http', url: endpoint } } },
       null,
@@ -188,6 +225,7 @@ function genericHttp(record: CatalogRecord, endpoint: string): InstallSnippet {
 /** Local (stdio) factories, in render order. One per client that supports a local install. */
 const STDIO_FACTORIES: StdioFactory[] = [
   claudeCodeStdio,
+  clineStdio,
   codexStdio,
   cursorStdio,
   geminiStdio,
@@ -197,6 +235,7 @@ const STDIO_FACTORIES: StdioFactory[] = [
 /** Remote (HTTP) factories, in render order. Emitted only when the record has an endpoint. */
 const HTTP_FACTORIES: HttpFactory[] = [
   claudeCodeHttp,
+  clineHttp,
   codexHttp,
   cursorHttp,
   curlHttp,

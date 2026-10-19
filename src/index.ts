@@ -30,7 +30,7 @@ await createApp({
   instructions:
     'This server is the discovery front door to the cyanheads MCP fleet. ' +
     'Use cyanheads_search_catalog to find tools or servers by describing what you want to do. ' +
-    'Use cyanheads_describe_entry to get descriptions, connection metadata, and per-client install snippets for any result. ' +
+    "Use cyanheads_describe_entry to get descriptions, connection metadata, and per-client install snippets for any result; pass a result's name and server to describe exactly that row. " +
     'Tool schemas are available from the connected server through tools/list. ' +
     'Continue searches with nextOffset and, in tools scope, nextServersOffset; reuse the same query and filters. ' +
     'Scope "tools" (default) finds individual tools; scope "servers" finds which server owns a workflow. ' +

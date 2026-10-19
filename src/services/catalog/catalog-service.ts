@@ -1,8 +1,9 @@
 /**
  * @fileoverview CatalogService — fleet catalog with semantic search.
- * Loads fleet.json (v2 with baked embeddings) at startup, packs vectors into a
- * Float32Array for cache locality, and serves cosine-similarity search by
- * embedding the query at runtime and dot-producting against the in-memory index.
+ * Loads fleet.json (v2 with baked embeddings) at startup, normalizes each vector
+ * and packs it into a Float32Array for cache locality, and serves
+ * cosine-similarity search by embedding the query at runtime and
+ * dot-producting against the in-memory index.
  * Polls the remote payload on a configurable interval; atomic swap on change.
  * @module services/catalog/catalog-service
  */
@@ -18,7 +19,7 @@ import type {
   CatalogCategory,
   CatalogRecord,
   CatalogSearchResult,
-  CatalogTool,
+  CatalogToolEntry,
   FleetPayload,
   ICatalogService,
 } from './types.js';
@@ -35,11 +36,21 @@ interface CatalogIndex {
   serverByName: Map<string, CatalogRecord>;
   /** Packed [serverCount × dims] row-major. */
   serverVectors: Float32Array;
-  toolByFoldedName: Map<string, (CatalogTool & { serverRecord: CatalogRecord }) | null>;
-  toolByName: Map<string, CatalogTool & { serverRecord: CatalogRecord }>;
+  /** Every row per lowercased name, in payload order. */
+  toolsByFoldedName: Map<string, CatalogToolEntry[]>;
+  /** Every row per exact name, in payload order — one per owning server. */
+  toolsByName: Map<string, CatalogToolEntry[]>;
   /** Packed [toolCount × dims] row-major. */
   toolVectors: Float32Array;
 }
+
+/**
+ * Norm deviation past which a load logs a warning. Producer vectors are unit
+ * length up to six-decimal rounding (measured drift below 1e-6); a deviation
+ * past this means the producer skipped or misordered normalization. The vector
+ * is normalized either way.
+ */
+const NORM_TOLERANCE = 1e-4;
 
 type CatalogServiceConfig = Pick<
   ServerConfig,
@@ -165,14 +176,27 @@ export class CatalogService implements ICatalogService {
    * duplication, no stale local metadata masking the real record. The static
    * record also survives `_maybeRefresh()`'s atomic index swap by construction,
    * since it is never part of `this._index`.
+   *
+   * Same-spelling tools under different servers are separate rows, so a name
+   * can have several owners. Every candidate is returned in payload order and
+   * the caller decides; `server` narrows to one owner's rows.
    */
-  getTool(name: string): (CatalogTool & { serverRecord: CatalogRecord }) | null {
+  getTool(name: string, server?: string): CatalogToolEntry[] {
     const index = this._assertInitialized();
-    const exact = index.toolByName.get(name);
-    if (exact) return exact;
     const folded = name.toLowerCase();
-    if (index.toolByFoldedName.has(folded)) return index.toolByFoldedName.get(folded) ?? null;
-    return getSelfCatalogTool(folded);
+    let exact = index.toolsByName.get(name) ?? [];
+    let folds = index.toolsByFoldedName.get(folded) ?? [];
+    if (server !== undefined) {
+      const owner = this.getServer(server);
+      if (!owner) return [];
+      exact = exact.filter((t) => t.serverRecord === owner);
+      folds = folds.filter((t) => t.serverRecord === owner);
+      if (!exact.length && !folds.length && owner.name !== SELF_RECORD_NAME) return [];
+    }
+    if (exact.length) return exact;
+    if (folds.length) return new Set(folds.map((t) => t.name)).size === 1 ? folds : [];
+    const self = getSelfCatalogTool(folded);
+    return self ? [self] : [];
   }
 
   getServer(name: string): CatalogRecord | null {
@@ -239,13 +263,52 @@ export class CatalogService implements ICatalogService {
 
     const serverVectors = new Float32Array(serverCount * dims);
     const toolVectors = new Float32Array(toolCount * dims);
-    const toolByName = new Map<string, CatalogTool & { serverRecord: CatalogRecord }>();
+    const toolEntries: CatalogToolEntry[] = [];
     const serverByName = new Map<string, CatalogRecord>();
     const serverByFoldedName = new Map<string, CatalogRecord | null>();
-    const toolByFoldedName = new Map<
-      string,
-      (CatalogTool & { serverRecord: CatalogRecord }) | null
-    >();
+
+    /**
+     * Scores are dot products, so each row is packed at unit length. The norm
+     * is taken in float64 from the payload values before packing: a non-unit
+     * producer vector keeps its direction and scores as a true cosine, and no
+     * normalized component can overflow float32. Components are divided by the
+     * largest magnitude before squaring, since squaring raw values overflows
+     * above ~1e154 and underflows below ~1e-154; any nonzero vector then has a
+     * finite, nonzero norm, and only a zero vector cannot be normalized.
+     */
+    let drifted = 0;
+    let maxDrift = 0;
+    const driftIdentities: string[] = [];
+    const pack = (
+      embedding: number[],
+      store: Float32Array,
+      row: number,
+      kind: 'Server' | 'Tool',
+      identity: string,
+    ) => {
+      if (embedding.length !== dims) {
+        throw internalError(
+          `${kind} "${identity}" embedding has ${embedding.length} dims; expected ${dims}.`,
+        );
+      }
+      let max = 0;
+      for (const v of embedding) max = Math.max(max, Math.abs(v));
+      if (max === 0) {
+        throw internalError(`${kind} "${identity}" embedding cannot be normalized: its norm is 0.`);
+      }
+      let sumSq = 0;
+      for (const v of embedding) sumSq += (v / max) ** 2;
+      const scaledNorm = Math.sqrt(sumSq);
+      const drift = Math.abs(max * scaledNorm - 1);
+      if (drift > NORM_TOLERANCE) {
+        drifted++;
+        maxDrift = Math.max(maxDrift, drift);
+        if (driftIdentities.length < 10) driftIdentities.push(identity.slice(0, 160));
+      }
+      const offset = row * dims;
+      // biome-ignore lint/style/noNonNullAssertion: bounds enforced by the dims check above
+      for (let i = 0; i < dims; i++) store[offset + i] = embedding[i]! / max / scaledNorm;
+    };
 
     let toolI = 0;
     for (const [si, server] of payload.servers.entries()) {
@@ -254,39 +317,33 @@ export class CatalogService implements ICatalogService {
           `Server name "${server.name}" contains underscores. Fleet naming convention requires hyphenated server names.`,
         );
       }
-      if (server.embedding.length !== dims) {
-        throw internalError(
-          `Server "${server.name}" embedding has ${server.embedding.length} dims; expected ${dims}.`,
-        );
-      }
 
-      serverVectors.set(server.embedding, si * dims);
+      pack(server.embedding, serverVectors, si, 'Server', server.name);
       serverByName.set(server.name, server);
       const serverFold = server.name.toLowerCase();
       serverByFoldedName.set(serverFold, serverByFoldedName.has(serverFold) ? null : server);
 
       for (const tool of server.tools) {
-        if (tool.embedding.length !== dims) {
-          throw internalError(
-            `Tool "${tool.name}" embedding has ${tool.embedding.length} dims; expected ${dims}.`,
-          );
-        }
-        toolVectors.set(tool.embedding, toolI * dims);
-        const entry = { ...tool, serverRecord: server };
-        toolByName.set(tool.name, entry);
-        const toolFold = tool.name.toLowerCase();
-        toolByFoldedName.set(toolFold, toolByFoldedName.has(toolFold) ? null : entry);
+        pack(tool.embedding, toolVectors, toolI, 'Tool', `${server.name}/${tool.name}`);
+        toolEntries.push({ ...tool, serverRecord: server });
         toolI++;
       }
+    }
+
+    if (drifted) {
+      logger.warning(
+        `Normalized ${drifted} catalog vectors whose norm deviates from 1 by more than ${NORM_TOLERANCE} ` +
+          `(largest deviation ${maxDrift.toPrecision(4)}): ${JSON.stringify(driftIdentities)}`,
+      );
     }
 
     return {
       payload,
       serverVectors,
       toolVectors,
-      toolByName,
+      toolsByName: Map.groupBy(toolEntries, (t) => t.name),
       serverByName,
-      toolByFoldedName,
+      toolsByFoldedName: Map.groupBy(toolEntries, (t) => t.name.toLowerCase()),
       serverByFoldedName,
       dims,
       initializedAt: new Date().toISOString(),

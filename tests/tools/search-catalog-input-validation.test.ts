@@ -4,7 +4,8 @@
  * @module tests/tools/search-catalog-input-validation.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
 import { initCatalogService } from '@/services/catalog/catalog-service.js';
@@ -151,16 +152,50 @@ describe('cyanheads_search_catalog — input validation', () => {
       expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 0 })).toThrow();
     });
 
-    it('rejects limit above 20', () => {
-      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 21 })).toThrow();
-    });
+    /** Arguments as a client sends them: `limit` may arrive as a string the framework repairs or rejects. */
+    const wire = (limit: number | string) =>
+      ({ query: 'test', limit }) as z.input<typeof searchCatalogTool.input>;
+
+    it.each([21, 100, 1000, '100'])(
+      'serves limit %j above 20 instead of rejecting it, matching the limit-20 page',
+      async (limit) => {
+        const capped = await runToolContract(searchCatalogTool, wire(20));
+        const served = await runToolContract(searchCatalogTool, wire(limit));
+        expect(served.isError).not.toBe(true);
+        // The fixture's one match fits on one page, so nothing is cut and nothing is disclosed.
+        expect(served.structuredContent).toEqual(capped.structuredContent);
+        expect(served.structuredContent).toMatchObject({ totalCount: 1, nextOffset: null });
+        expect(served.structuredContent).not.toHaveProperty('truncated');
+      },
+    );
+
+    it.each([1001, 1e6, 0, -1, 1.5, '1001', 'abc', '1.5'])(
+      'rejects limit %j with invalid_arguments',
+      async (limit) => {
+        const result = await runToolContract(searchCatalogTool, wire(limit));
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: { data: { reason: 'invalid_arguments' } },
+        });
+      },
+    );
 
     it('accepts limit at the minimum boundary (1)', () => {
       expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 1 })).not.toThrow();
     });
 
-    it('accepts limit at the maximum boundary (20)', () => {
-      expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 20 })).not.toThrow();
+    it('accepts limit at the per-call cap (20) and the 1000 ceiling', () => {
+      for (const limit of [20, 1000]) {
+        expect(searchCatalogTool.input.parse({ query: 'test', limit }).limit).toBe(limit);
+      }
+    });
+
+    it('advertises the 1000 ceiling and states the 20-per-call cap', () => {
+      const schema = z.toJSONSchema(searchCatalogTool.input) as unknown as {
+        properties: { limit: { minimum: number; maximum: number; description: string } };
+      };
+      expect(schema.properties.limit).toMatchObject({ minimum: 1, maximum: 1000 });
+      expect(schema.properties.limit.description).toMatch(/20 per call/);
     });
 
     it('rejects non-integer limit', () => {

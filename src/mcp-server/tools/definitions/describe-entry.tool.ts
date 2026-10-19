@@ -11,6 +11,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { markdown } from '@cyanheads/mcp-ts-core/utils';
 import { getCatalogService } from '@/services/catalog/service-instance.js';
 import { buildAllSnippets } from '@/services/catalog/snippets.js';
+import { CLIENT_IDS } from '@/services/catalog/types.js';
 
 /**
  * Upper bound on the entry name. Fleet identifiers are bounded in practice —
@@ -38,7 +39,17 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       .describe(
         'Tool name (snake_case, e.g. "earthquake_search") or server name ' +
           '(kebab-case, e.g. "earthquake-mcp-server"). 1-' +
-          `${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. Use cyanheads_search_catalog to discover valid names.`,
+          `${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server. Use cyanheads_search_catalog to discover valid names.`,
+      ),
+    server: z
+      .string()
+      .min(1)
+      .max(NAME_MAX_LENGTH)
+      .optional()
+      .describe(
+        'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with ' +
+          `this name. 1-${NAME_MAX_LENGTH} characters, resolved like a server name. Required when the tool ` +
+          'name has more than one owner; with a server name, it must name the same server.',
       ),
     kind: z
       .enum(['tool', 'server'])
@@ -48,11 +59,12 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
           'underscores are treated as tools; names containing hyphens are treated as servers.',
       ),
     client: z
-      .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
+      .enum(CLIENT_IDS)
       .optional()
       .describe(
         'Return install snippets for this client only (both local and remote transports when ' +
-          'available). Omit to return snippets for all supported clients.',
+          'available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a ' +
+          'connectivity probe for hosted servers. Omit to return snippets for all supported clients.',
       ),
   }),
 
@@ -86,9 +98,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .array(
                 z
                   .object({
-                    client: z
-                      .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
-                      .describe('Target MCP client.'),
+                    client: z.enum(CLIENT_IDS).describe('Target MCP client.'),
                     transport: z
                       .enum(['stdio', 'http'])
                       .describe('Local stdio or hosted HTTP transport.'),
@@ -152,9 +162,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .array(
                 z
                   .object({
-                    client: z
-                      .enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'])
-                      .describe('MCP client this snippet targets.'),
+                    client: z.enum(CLIENT_IDS).describe('MCP client this snippet targets.'),
                     transport: z
                       .enum(['stdio', 'http'])
                       .describe(
@@ -183,15 +191,22 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'No tool or server with the given name exists in the catalog.',
+      when: 'No tool or server with the given name, under the given server when set, exists in the catalog.',
       recovery:
-        'Use cyanheads_search_catalog to find the correct name, then call cyanheads_describe_entry again.',
+        'Use cyanheads_search_catalog to find the correct name and owning server, then call cyanheads_describe_entry again.',
     },
     {
       reason: 'ambiguous_kind',
       code: JsonRpcErrorCode.ValidationError,
       when: 'Name matches both a tool and a server (collision in catalog).',
       recovery: 'Set the kind parameter to "tool" or "server" to disambiguate.',
+    },
+    {
+      reason: 'ambiguous_owner',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The tool name has more than one owning server and server is not set.',
+      recovery:
+        'Set server to the owning server you want, one of the owners the error lists — the server value cyanheads_search_catalog returned with this tool.',
     },
     {
       reason: 'catalog_empty',
@@ -208,7 +223,11 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
 
   // biome-ignore lint/suspicious/useAwait: handler has no I/O but must return a Promise for the framework
   async handler(input, ctx) {
-    ctx.log.info('Describing catalog entry', { name: input.name, kind: input.kind });
+    ctx.log.info('Describing catalog entry', {
+      name: input.name,
+      kind: input.kind,
+      server: input.server,
+    });
 
     const catalog = getCatalogService();
 
@@ -223,21 +242,42 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       }
     }
 
-    const toolEntry = resolvedKind !== 'server' ? catalog.getTool(input.name) : null;
-    const serverEntry = resolvedKind !== 'tool' ? catalog.getServer(input.name) : null;
+    const toolEntries = resolvedKind !== 'server' ? catalog.getTool(input.name, input.server) : [];
+    let serverEntry = resolvedKind !== 'tool' ? catalog.getServer(input.name) : null;
+    if (
+      serverEntry &&
+      input.server !== undefined &&
+      catalog.getServer(input.server) !== serverEntry
+    ) {
+      serverEntry = null;
+    }
 
     // Ambiguity check (can happen if resolvedKind is undefined and name has neither _ nor -).
-    if (toolEntry && serverEntry) {
+    if (toolEntries.length && serverEntry) {
       throw ctx.fail('ambiguous_kind', `"${input.name}" matches both a tool and a server`, {
         name: input.name,
       });
     }
 
+    const [toolEntry, ...otherOwners] = toolEntries;
+    if (toolEntry && otherOwners.length) {
+      const owners = toolEntries.map((t) => t.serverRecord.name);
+      throw ctx.fail(
+        'ambiguous_owner',
+        `Tool "${toolEntry.name}" has ${owners.length} owners: ${owners.join(', ')}`,
+        { name: input.name, owners },
+      );
+    }
+
     const owner = toolEntry?.serverRecord ?? serverEntry;
     if (!owner) {
-      throw ctx.fail('not_found', `No tool or server named "${input.name}" in the catalog`, {
-        name: input.name,
-      });
+      throw ctx.fail(
+        'not_found',
+        input.server === undefined
+          ? `No tool or server named "${input.name}" in the catalog`
+          : `No tool or server named "${input.name}" under server "${input.server}" in the catalog`,
+        { name: input.name, ...(input.server !== undefined ? { server: input.server } : {}) },
+      );
     }
     const allSnippets = buildAllSnippets(owner);
     const snippets = input.client

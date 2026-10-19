@@ -40,8 +40,22 @@ const httpFor = (record: CatalogRecord, client: string) =>
   buildAllSnippets(record).find((s) => s.transport === 'http' && s.client === client);
 
 describe('buildAllSnippets — hosted server (endpoint present)', () => {
-  it('returns 5 local (stdio) + 6 remote (http) = 11 snippets', () => {
-    expect(buildAllSnippets(HOSTED)).toHaveLength(11);
+  it('labels each snippet with only the clients that accept its payload', () => {
+    expect(buildAllSnippets(HOSTED).map((s) => [s.transport, s.client, s.label])).toEqual([
+      ['stdio', 'claude-code', 'Claude Code (CLI)'],
+      ['stdio', 'cline', 'Cline (cline_mcp_settings.json)'],
+      ['stdio', 'codex', 'Codex (CLI)'],
+      ['stdio', 'cursor', 'Cursor (mcp.json)'],
+      ['stdio', 'gemini', 'Gemini (CLI)'],
+      ['stdio', 'streamable-http', 'Claude Desktop / generic'],
+      ['http', 'claude-code', 'Claude Code (CLI)'],
+      ['http', 'cline', 'Cline (cline_mcp_settings.json)'],
+      ['http', 'codex', 'Codex (CLI)'],
+      ['http', 'cursor', 'Cursor (mcp.json)'],
+      ['http', 'curl', 'curl (initialize probe)'],
+      ['http', 'gemini', 'Gemini (CLI)'],
+      ['http', 'streamable-http', 'Generic (mcpServers JSON)'],
+    ]);
   });
 
   it('emits all local snippets before any remote snippet', () => {
@@ -49,29 +63,6 @@ describe('buildAllSnippets — hosted server (endpoint present)', () => {
     const firstHttp = snippets.findIndex((s) => s.transport === 'http');
     const lastStdio = snippets.map((s) => s.transport).lastIndexOf('stdio');
     expect(lastStdio).toBeLessThan(firstHttp);
-  });
-
-  it('local snippets cover the five non-curl clients', () => {
-    const clients = buildAllSnippets(HOSTED)
-      .filter((s) => s.transport === 'stdio')
-      .map((s) => s.client)
-      .sort();
-    expect(clients).toEqual(['claude-code', 'codex', 'cursor', 'gemini', 'streamable-http']);
-  });
-
-  it('remote snippets cover all six clients including curl', () => {
-    const clients = buildAllSnippets(HOSTED)
-      .filter((s) => s.transport === 'http')
-      .map((s) => s.client)
-      .sort();
-    expect(clients).toEqual([
-      'claude-code',
-      'codex',
-      'curl',
-      'cursor',
-      'gemini',
-      'streamable-http',
-    ]);
   });
 
   it('every snippet carries transport, client, label, and a non-empty payload', () => {
@@ -124,6 +115,16 @@ describe('local (stdio) snippet payloads', () => {
     });
   });
 
+  it('cline JSON is the generic stdio JSON: type "stdio" + command/args', () => {
+    const cline = stdioFor(HOSTED, 'cline')!.payload;
+    expect(cline).toBe(stdioFor(HOSTED, 'streamable-http')!.payload);
+    expect(JSON.parse(cline).mcpServers['earthquake-mcp-server']).toEqual({
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', '@cyanheads/earthquake-mcp-server'],
+    });
+  });
+
   it('no stdio payload references the hosted endpoint', () => {
     for (const s of buildAllSnippets(HOSTED).filter((s) => s.transport === 'stdio')) {
       expect(s.payload).not.toContain('earthquake.caseyjhand.com');
@@ -165,29 +166,48 @@ describe('remote (http) snippet payloads', () => {
     });
   });
 
-  it('curl POSTs initialize with the MCP-Protocol-Version header', () => {
+  it('cline JSON carries type "streamableHttp" + url', () => {
+    const payload = httpFor(HOSTED, 'cline')!.payload;
+    expect(JSON.parse(payload)).toEqual({
+      mcpServers: {
+        'earthquake-mcp-server': {
+          type: 'streamableHttp',
+          url: 'https://earthquake.caseyjhand.com/mcp',
+        },
+      },
+    });
+  });
+
+  it('curl POSTs a legacy 2025-11-25 initialize that accepts JSON and SSE, with no protocol header', () => {
     const payload = httpFor(HOSTED, 'curl')!.payload;
-    expect(payload).toMatch(/^curl -X POST https:\/\/earthquake\.caseyjhand\.com\/mcp/);
-    expect(payload).toContain('Content-Type: application/json');
-    expect(payload).toContain('MCP-Protocol-Version: 2026-07-28');
-    expect(payload).toContain('"method":"initialize"');
-    expect(payload).toContain('"protocolVersion":"2026-07-28"');
+    expect(payload).toBe(
+      [
+        'curl -X POST https://earthquake.caseyjhand.com/mcp \\',
+        '  -H "Content-Type: application/json" \\',
+        '  -H "Accept: application/json, text/event-stream" \\',
+        `  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"1.0.0"}}}'`,
+      ].join('\n'),
+    );
   });
 });
 
 describe('buildAllSnippets — local-only server (no endpoint)', () => {
-  it('returns only the five stdio snippets — no http, no curl', () => {
-    const snippets = buildAllSnippets(LOCAL_ONLY);
-    expect(snippets).toHaveLength(5);
-    expect(snippets.every((s) => s.transport === 'stdio')).toBe(true);
-    expect(snippets.some((s) => s.client === 'curl')).toBe(false);
+  it('returns only the six stdio snippets — no http, no curl', () => {
+    expect(buildAllSnippets(LOCAL_ONLY).map((s) => [s.transport, s.client])).toEqual([
+      ['stdio', 'claude-code'],
+      ['stdio', 'cline'],
+      ['stdio', 'codex'],
+      ['stdio', 'cursor'],
+      ['stdio', 'gemini'],
+      ['stdio', 'streamable-http'],
+    ]);
   });
 
   it('scaffolds required env vars as empty-valued keys in the JSON configs', () => {
-    const cursor = JSON.parse(stdioFor(LOCAL_ONLY, 'cursor')!.payload);
-    expect(cursor.mcpServers['mailchimp-mcp-server'].env).toEqual({ MAILCHIMP_API_KEY: '' });
-    const generic = JSON.parse(stdioFor(LOCAL_ONLY, 'streamable-http')!.payload);
-    expect(generic.mcpServers['mailchimp-mcp-server'].env).toEqual({ MAILCHIMP_API_KEY: '' });
+    for (const client of ['cursor', 'streamable-http', 'cline']) {
+      const parsed = JSON.parse(stdioFor(LOCAL_ONLY, client)!.payload);
+      expect(parsed.mcpServers['mailchimp-mcp-server'].env).toEqual({ MAILCHIMP_API_KEY: '' });
+    }
   });
 
   it('keeps CLI snippets bare — no env inlined into the command', () => {

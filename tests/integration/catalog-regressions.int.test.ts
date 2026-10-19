@@ -4,6 +4,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import type { z } from '@cyanheads/mcp-ts-core';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -196,6 +197,89 @@ describe('catalog regression contracts', () => {
     }
   });
 
+  it('serves an oversized limit up to the per-call cap and discloses the cut on both surfaces', async () => {
+    await service.initialize();
+    // `limit` as a client sends it: a numeric string is repaired by the framework.
+    const call = (args: { limit: number | string; offset?: number; scope?: 'servers' }) =>
+      runToolContract(searchCatalogTool, {
+        query: 'fixture',
+        ...args,
+      } as z.input<typeof searchCatalogTool.input>);
+    const truncationKeys = ['truncated', 'shown', 'cap', 'notice'];
+
+    const capped = await call({ limit: 20 });
+    const oversized = await call({ limit: 100 });
+    for (const key of truncationKeys) expect(capped.structuredContent).not.toHaveProperty(key);
+    const notice =
+      'limit 100 exceeds the per-call cap of 20; 4 more results follow. Continue with offset 20.';
+    expect(oversized.structuredContent).toEqual({
+      ...capped.structuredContent!,
+      truncated: true,
+      shown: 20,
+      cap: 20,
+      notice,
+    });
+    expect(oversized.structuredContent).toMatchObject({ totalCount: 24, nextOffset: 20 });
+    const lines = text(oversized).split('\n');
+    for (const line of [`> ${notice}`, '**truncated:** true', '**shown:** 20', '**cap:** 20'])
+      expect(lines).toContain(line);
+    expect(text(capped)).not.toContain('per-call cap');
+
+    // A mid-list page names the singular remainder and the offset after the served page.
+    expect((await call({ limit: 21, offset: 3 })).structuredContent).toMatchObject({
+      nextOffset: 23,
+      shown: 20,
+      notice:
+        'limit 21 exceeds the per-call cap of 20; 1 more result follows. Continue with offset 23.',
+    });
+
+    // Pages that hold every remaining match, the zero-match page, and a past-end page carry no truncation fields.
+    const quiet = [
+      await call({ limit: 100, offset: 10 }),
+      await call({ limit: 1000, scope: 'servers' }),
+      await call({ limit: 100, offset: 99 }),
+      await runToolContract(searchCatalogTool, { query: 'no match', limit: 100 }),
+    ];
+    for (const page of quiet) {
+      expect(page.isError).not.toBe(true);
+      expect(page.structuredContent).toMatchObject({ nextOffset: null });
+      for (const key of ['truncated', 'shown', 'cap'])
+        expect(page.structuredContent).not.toHaveProperty(key);
+      expect(text(page)).not.toContain('per-call cap');
+    }
+    expect(quiet[0]!.structuredContent).toMatchObject({ offset: 10, totalCount: 24 });
+    expect(searchCatalogTool.output.parse(quiet[0]!.structuredContent).results).toHaveLength(14);
+    expect(searchCatalogTool.output.parse(quiet[1]!.structuredContent).results).toHaveLength(12);
+    // Last pages carry no notice; the past-end and zero-match notices survive an oversized limit intact.
+    for (const page of quiet.slice(0, 2))
+      expect(page.structuredContent).not.toHaveProperty('notice');
+    const pastEnd = 'No results on this page. Use offset 0 to return to the first result page.';
+    const zero = 'No tools matched. Try broadening the query or switching to scope "servers".';
+    expect(quiet[2]!.structuredContent).toMatchObject({ notice: pastEnd });
+    expect(text(quiet[2]!).split('\n')).toContain(`> ${pastEnd}`);
+    expect(quiet[3]!.structuredContent).toMatchObject({ notice: zero });
+    expect(text(quiet[3]!).split('\n')).toContain(`> ${zero}`);
+
+    // Walking with the same oversized limit returns every match exactly once.
+    const walked: string[] = [];
+    let offset: number | null = 0;
+    const pages: Record<string, unknown>[] = [];
+    while (offset !== null) {
+      const page = await call({ limit: '100', offset });
+      expect(page.isError).not.toBe(true);
+      const content = page.structuredContent as Record<string, unknown>;
+      pages.push(content);
+      walked.push(...searchCatalogTool.output.parse(content).results.map((r) => r.name));
+      offset = content.nextOffset as number | null;
+    }
+    expect(walked).toEqual(payload.servers.flatMap((s) => s.tools.map((t) => t.name)));
+    expect(pages.map((p) => [p.offset, p.nextOffset, p.truncated])).toEqual([
+      [0, 20, true],
+      [20, null, undefined],
+    ]);
+    for (const key of truncationKeys) expect(pages.at(-1)).not.toHaveProperty(key);
+  });
+
   it.each([
     { offset: -1 },
     { offset: 0.5 },
@@ -267,6 +351,35 @@ describe('catalog regression contracts', () => {
         score: 1,
       },
     ]);
+  });
+
+  it('scores scaled and float32-overflow vectors as finite cosines through the search tool', async () => {
+    payload.servers[3]!.tools[0]!.embedding = [10, 0];
+    payload.servers[4]!.tools[1]!.embedding = [0.1, 0];
+    payload.servers[5]!.tools[0]!.embedding = [1e39, 0];
+    payload.servers[6]!.embedding = [1e39, 1];
+    // Squared, these leave float64 range; each still has a finite, nonzero norm.
+    payload.servers[7]!.tools[0]!.embedding = [1e200, 0];
+    payload.servers[8]!.embedding = [1e-200, 0];
+    await service.initialize();
+    const tools = await runToolContract(searchCatalogTool, { query: 'fixture', limit: 20 });
+    expect(tools.isError).not.toBe(true);
+    expect(tools.structuredContent).toMatchObject({ totalCount: 24, serversTotal: 12 });
+    const page = searchCatalogTool.output.parse(tools.structuredContent);
+    expect(page.results.map((r) => r.score)).toEqual(Array(20).fill(1));
+    expect(page.servers?.map((s) => s.topScore)).toEqual(Array(10).fill(1));
+    expect(page.results.map((r) => r.name)).toEqual(
+      payload.servers.flatMap((s) => s.tools.map((t) => t.name)).slice(0, 20),
+    );
+    const servers = await runToolContract(searchCatalogTool, {
+      query: 'fixture',
+      scope: 'servers',
+      limit: 20,
+    });
+    expect(servers.isError).not.toBe(true);
+    expect(
+      searchCatalogTool.output.parse(servers.structuredContent).results.map((r) => r.score),
+    ).toEqual(Array(12).fill(1));
   });
 
   it('reports collapsed identities in a bounded load-time warning', async () => {
@@ -381,13 +494,17 @@ describe('catalog regression contracts', () => {
     payload.servers = [upper];
     await service.initialize();
     expect(service.getServer(lower.name)?.name).toBe(upper.name);
-    expect(service.getTool('cyanheads_search_catalog')?.description).toBe('remote upper');
+    expect(service.getTool('cyanheads_search_catalog').map((t) => t.description)).toEqual([
+      'remote upper',
+    ]);
     payload = { ...payload, generatedAt: 'collision', servers: [upper, lower] };
     await vi.advanceTimersByTimeAsync(1100);
     expect(service.getServer(lower.name)?.name).toBe(lower.name);
-    expect(service.getTool('cyanheads_search_catalog')?.description).toBe('remote lower');
+    expect(service.getTool('cyanheads_search_catalog').map((t) => t.description)).toEqual([
+      'remote lower',
+    ]);
     expect(service.getServer('Cyanheads-MCP-Server')).toBeNull();
-    expect(service.getTool('Cyanheads_Search_Catalog')).toBeNull();
+    expect(service.getTool('Cyanheads_Search_Catalog')).toEqual([]);
     const miss = await runToolContract(describeEntryTool, { name: 'Cyanheads_Search_Catalog' });
     expect(miss.structuredContent).toMatchObject({
       error: {
@@ -399,10 +516,67 @@ describe('catalog regression contracts', () => {
     });
     payload = { ...payload, generatedAt: 'removed', servers: [server(0)] };
     await vi.advanceTimersByTimeAsync(1100);
-    expect(service.getTool('CYANHEADS_SEARCH_CATALOG')?.name).toBe('cyanheads_search_catalog');
+    expect(service.getTool('CYANHEADS_SEARCH_CATALOG').map((t) => t.name)).toEqual([
+      'cyanheads_search_catalog',
+    ]);
   });
 
-  it.each([undefined, 'codex', 'curl'] as const)(
+  it.each(['later', 'earlier'] as const)(
+    'describes each same-spelling row by name + server and refuses the bare name (copy %s)',
+    async (order) => {
+      const shared = payload.servers[0]!.tools[0]!;
+      const copy = { ...shared, description: 'shadow copy' };
+      const owner = payload.servers[order === 'later' ? 5 : 0]!;
+      const other = payload.servers[order === 'later' ? 0 : 5]!;
+      if (order === 'earlier') {
+        // Original moves to fixture-05; the copy sits on fixture-00, earlier in payload order.
+        other.tools.push({ ...shared });
+        owner.tools[0] = copy;
+      } else {
+        owner.tools.push(copy);
+      }
+      const original = order === 'later' ? payload.servers[0]! : other;
+      const owners = payload.servers
+        .filter((s) => s.tools.some((t) => t.name === shared.name))
+        .map((s) => s.name);
+      await service.initialize();
+      const rows = await service.search({ query: 'fixture', scope: 'tools' });
+      expect(rows.filter((r) => r.name === shared.name).map((r) => r.server)).toEqual(owners);
+      for (const row of rows.filter((r) => r.name === shared.name)) {
+        for (const kind of [undefined, 'tool'] as const) {
+          const result = await runToolContract(describeEntryTool, {
+            name: row.name,
+            server: row.server,
+            ...(kind ? { kind } : {}),
+          });
+          expect(result.isError).not.toBe(true);
+          const described = describeEntryTool.output.parse(result.structuredContent).result;
+          expect(described).toMatchObject({
+            kind: 'tool',
+            server: row.server,
+            description: row.brief,
+          });
+          const serverResult = describeEntryTool.output.parse(
+            (await runToolContract(describeEntryTool, { name: row.server })).structuredContent,
+          ).result;
+          expect(described.npm).toBe(serverResult.npm);
+          expect(described.installSnippets).toEqual(serverResult.installSnippets);
+        }
+      }
+      expect(rows.find((r) => r.server === original.name && r.name === shared.name)?.brief).toBe(
+        shared.description,
+      );
+      for (const name of [shared.name, shared.name.toUpperCase()]) {
+        const refused = await runToolContract(describeEntryTool, { name });
+        expect(refused.structuredContent).toMatchObject({
+          error: { data: { reason: 'ambiguous_owner', owners } },
+        });
+        expect(text(refused)).toContain(`Tool "${shared.name}" has 2 owners: ${owners.join(', ')}`);
+      }
+    },
+  );
+
+  it.each([undefined, 'cline', 'codex', 'curl'] as const)(
     'provides matching tool/server connection handoff for client %s',
     async (client) => {
       await service.initialize();

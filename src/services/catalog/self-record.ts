@@ -47,10 +47,10 @@ function readSelfPackage(): SelfPackageInfo {
  *
  * `embedding: []` is deliberate and safe. The vector index is built solely from
  * `FleetPayload.servers` in `CatalogService._buildIndex`, which sizes its packed
- * Float32Arrays from that payload and dimension-checks every vector it packs.
- * This record is never a member of that payload — it is consulted only after a
- * remote-name miss in `getServer()` / `getTool()` — so its embedding is never
- * packed, never dot-producted, and never dimension-checked. The tradeoff is that
+ * Float32Arrays from that payload and validates and normalizes every vector it
+ * packs. This record is never a member of that payload — it is consulted only
+ * after a remote-name miss in `getServer()` / `getTool()` — so its embedding is
+ * never packed, normalized, or dot-producted. The tradeoff is that
  * `cyanheads_search_catalog` will not surface this server as a semantic match;
  * only name resolution (exact or unique case-insensitive) reaches it.
  */
