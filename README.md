@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.1.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-Fleet discovery for the cyanheads MCP ecosystem, built on a hosted `fleet.json` catalog of pre-computed tool and server embeddings. Search the catalog by natural-language query, or resolve a known tool or server name to its description, connection URL, and per-client install snippet. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Find the right MCP tool for the job across the cyanheads fleet. Describe a task in plain language to search every tool and server, then get a description, connection URL, and install snippet for your client.
 
 ### Tools
 
@@ -42,7 +42,7 @@ Fleet discovery for the cyanheads MCP ecosystem, built on a hosted `fleet.json` 
 
 ### `cyanheads_search_catalog` <sub>tool</sub>
 
-- `query` 1–500 raw characters, with non-whitespace text required; surrounding whitespace is trimmed before embedding and echo. `scope` selects `tools` (default) or `servers`; optional `category`: `research`, `government`, `public-data`, `utility`; `limit` 1–20 (default 5).
+- `query` 1–500 raw characters, with non-whitespace text required; surrounding whitespace is trimmed before embedding and echo. `scope` selects `tools` (default) or `servers`; optional `category`: `research`, `government`, `public-data`, `utility`; `limit` 1–1000 (default 5), served at most 20 per call: when a larger `limit` leaves matches past the page, the response adds `truncated`, `shown`, `cap`, and a `notice` naming the offset to continue from.
 - Results carry cosine-similarity `score` (`[0, 1]`, comparable within one response). Tool searches include a `servers` roll-up with ten entries per page and `serversTotal`; an unloaded catalog returns retryable `catalog_empty`.
 - Page results with `offset` and the tools-scope roll-up independently with `serversOffset` (both default to 0). Reuse the same query, scope, category, and limit with `nextOffset` / `nextServersOffset`; null means exhausted. Each call uses the current catalog, so a refresh between pages can change ordering. Servers scope requires `serversOffset: 0` and omits roll-up fields.
 - `SIMILARITY_FLOOR` (default `0.3`) filters matches before the limit applies.
@@ -51,10 +51,11 @@ Fleet discovery for the cyanheads MCP ecosystem, built on a hosted `fleet.json` 
 
 ### `cyanheads_describe_entry` <sub>tool</sub>
 
-- `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. Exact names win, then unique case-insensitive names; output uses canonical names. `client` optionally selects `claude-code`, `codex`, `cursor`, `gemini`, `streamable-http`, or `curl`.
+- `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. Exact names win, then unique case-insensitive names; output uses canonical names. `client` optionally selects `claude-code`, `cline`, `codex`, `cursor`, `gemini`, `streamable-http` (generic `mcpServers` JSON), or `curl`.
+- `server` (optional, 1–64 characters) names the owning server: a search result's `name` + `server` describes exactly that row, in either scope. It is required when more than one server owns the tool name; with a server name, it must name the same server.
 - Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets.
 - Descriptions are catalog text; obtain tool schemas from the connected server's `tools/list`.
-- Failures return `not_found`, `ambiguous_kind` (set `kind`), or retryable `catalog_empty`.
+- Failures return `not_found`, `ambiguous_kind` (set `kind`), `ambiguous_owner` (set `server`; the error lists the owners), or retryable `catalog_empty`.
 
 ## Features
 
@@ -63,15 +64,15 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 Catalog-specific:
 
 - Hourly background catalog refresh (`CATALOG_REFRESH_SECONDS`, default `3600`) with an atomic index swap when `generatedAt` changes — no restart needed
-- Empty catalogs and conflicting duplicate identities fail before index replacement; refresh retains the last valid catalog. Identical duplicates collapse before indexing, with a bounded load-time warning; servers with no tools remain valid.
-- Query embeddings are computed at request time via `@huggingface/transformers`; document embeddings are pre-computed, L2-normalized, and Matryoshka-truncated, shipped inside `fleet.json`
+- Empty catalogs, conflicting duplicate identities, and vectors that can't be normalized (wrong dimension, all zeros, or a non-finite component) fail before index replacement; refresh retains the last valid catalog. Identical duplicates collapse before indexing, with a bounded load-time warning; servers with no tools remain valid.
+- Query embeddings are computed at request time via `@huggingface/transformers`; document embeddings are pre-computed, L2-normalized, and Matryoshka-truncated, shipped inside `fleet.json`. The server normalizes each document vector again at load, so scores stay cosine similarities even when a catalog's vectors drift from unit length, and a bounded warning names vectors more than `1e-4` off.
 - The embedding model is warmed up during startup, before OpenTelemetry's HTTP instrumentation patches `fetch` — avoids a cold-cache model-load failure under OTEL
 - Self-describing: `cyanheads_describe_entry` resolves this server's own name and tools from a static fallback record, consulted only when the remote catalog doesn't carry an entry for it
 - `CATALOG_URL` can point at any endpoint serving the same schema, to front a custom fleet
 
 Agent-friendly output:
 
-- Search responses echo the effective query, report the total match count before the limit, and include broadening guidance when nothing matches
+- Search responses echo the effective query, report the total match count before the limit, include broadening guidance when nothing matches, and name the offset to continue from when a `limit` above 20 is cut to the per-call cap
 - Discriminated `result.kind` (`tool` | `server`) on `cyanheads_describe_entry` lets callers branch on data, not string parsing
 - Every search result carries a `score` field for trust calibration, plus a `servers` roll-up so agents can see which servers matched without a second call
 
@@ -79,24 +80,40 @@ Agent-friendly output:
 
 ### Public Hosted Instance
 
-A public instance is available at `https://cyanheads.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
-
-```json
-{
-  "mcpServers": {
-    "cyanheads-mcp-server": {
-      "type": "streamable-http",
-      "url": "https://cyanheads.caseyjhand.com/mcp"
-    }
-  }
-}
-```
+A public instance is available at `https://cyanheads.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
 
 For Claude Code:
 
 ```sh
 claude mcp add --transport http cyanheads https://cyanheads.caseyjhand.com/mcp
 ```
+
+For Cline (`cline_mcp_settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "cyanheads-mcp-server": {
+      "type": "streamableHttp",
+      "url": "https://cyanheads.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "cyanheads-mcp-server": {
+      "url": "https://cyanheads.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
 
 ### Self-Hosted / Local
 

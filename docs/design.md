@@ -98,8 +98,8 @@ Document embeddings are recomputed during portfolio deployment; cost grows with 
 cyanheads-mcp-server startup:
   1. Fetch fleet.json from CATALOG_URL
   2. Validate schema (Zod), including a nonempty servers array. Normalize identical exact-identity duplicates, then verify embeddingModel matches expected. Refuse to load on conflicts or mismatch.
-  3. Pack vectors as a single Float32Array of length (numDocs × 256) for cache locality
-  4. Build exact and unique case-insensitive name lookups alongside vector rows and metadata
+  3. Normalize each server and tool vector in float64, then pack the rows as a single Float32Array of length (numDocs × 256) for cache locality. A vector with the wrong dimension or all zeros refuses the load (step 2 already refused non-finite components); norms more than 1e-4 from 1 log one bounded warning.
+  4. Build exact and case-insensitive name lookups that keep every owner of a tool name in payload order, alongside vector rows and metadata
   5. Load @huggingface/transformers with the same model id
   6. Start poll timer: every CATALOG_REFRESH_SECONDS, re-fetch; if generatedAt changed, swap in new vectors atomically
 
@@ -107,7 +107,7 @@ cyanheads_search_catalog handler:
   1. Validate the 500-character raw ceiling and non-whitespace content, trim → prepend query prefix → embed query → truncate to 256 → normalize
   2. Dot product against every row in the packed Float32Array
   3. Filter by category if requested
-  4. Sort descending with name tie-breaks, slice ranked results by offset/limit; independently slice the full-match server roll-up by serversOffset (cap 10)
+  4. Sort descending with name tie-breaks, slice ranked results from offset by min(limit, 20) — a larger limit discloses the cut and the next offset; independently slice the full-match server roll-up by serversOffset (cap 10)
   5. Return with score = cosine similarity (0-1 range)
 ```
 
@@ -163,10 +163,10 @@ interface InstallSnippet {
   payload: string;
 }
 
-type ClientId = 'claude-code' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http';
+type ClientId = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http';
 ```
 
-Embeddings are L2-normalized at build time so the runtime cosine similarity collapses to a dot product.
+Embeddings are L2-normalized at build time so the runtime cosine similarity collapses to a dot product. The server normalizes them again at load, so a vector the producer left at another length still scores as a cosine.
 
 ---
 
@@ -182,13 +182,16 @@ Two transports per server, generated at describe time:
 | Client | stdio (local) | http (remote) | Format |
 |:-------|:--------------|:--------------|:-------|
 | `claude-code` | ✓ | ✓ | `claude mcp add` CLI command |
+| `cline` | ✓ | ✓ | `cline_mcp_settings.json` JSON — `type: 'stdio'` locally, `type: 'streamableHttp'` remotely |
 | `codex` | ✓ | ✓ | `codex mcp add` CLI command |
 | `cursor` | ✓ | ✓ | `mcpServers` JSON, no `type` field |
 | `gemini` | ✓ | ✓ | `gemini mcp add` CLI command |
-| `streamable-http` | ✓ | ✓ | generic `mcpServers` JSON (with `type`) for Claude Desktop, Cline, mcp-remote |
-| `curl` | — | ✓ | `initialize` connectivity probe — no stdio analog |
+| `streamable-http` | ✓ | ✓ | generic `mcpServers` JSON (with `type`) — the stdio form loads in Claude Desktop; the http form (`type: 'http'`) names no client |
+| `curl` | — | ✓ | legacy `initialize` connectivity probe — no stdio analog |
 
-A hosted server yields 11 snippets (5 stdio + 6 http); a local-only server yields 5 (stdio only). Required env vars (`record.requiredEnvVars`) are scaffolded as empty-valued `env` keys in the JSON configs so the caller knows what to set; CLI snippets stay bare. Each snippet carries a `transport` field, and `cyanheads_describe_entry` groups them into "Local install" and "Remote install" sections.
+Each label names only clients that load its payload. Claude Desktop's config file takes local stdio servers; it adds remote servers through Settings → Connectors, so no http snippet names it. Cline reads `type: 'streamableHttp'` for Streamable HTTP and treats an untyped URL entry as SSE, so it gets its own http snippet rather than the generic one.
+
+A hosted server yields 13 snippets (6 stdio + 7 http); a local-only server yields 6 (stdio only). Required env vars (`record.requiredEnvVars`) are scaffolded as empty-valued `env` keys in the JSON configs so the caller knows what to set; CLI snippets stay bare. Each snippet carries a `transport` field, and `cyanheads_describe_entry` groups them into "Local install" and "Remote install" sections.
 
 Tool descriptions carry the same owning-server connection metadata and client-filtered snippets as server descriptions. A requested `curl` client on a local-only entry still returns successful metadata, with `installSnippets: []` and an `installNotice` explaining the HTTP requirement and naming `codex` for the next describe call. Required environment variables render independently of snippet availability.
 
@@ -203,6 +206,7 @@ All hosted servers run Streamable HTTP. The legacy `sse` transport tag is never 
 ```ts
 // Local (stdio) — from record.npm
 claude-code:      claude mcp add --transport stdio ${name} -- npx -y ${npm}
+cline:            { mcpServers: { [name]: { type: 'stdio', command: 'npx', args: ['-y', npm], env? } } }
 codex:            codex mcp add ${name} -- npx -y ${npm}
 cursor:           { mcpServers: { [name]: { command: 'npx', args: ['-y', npm], env? } } }
 gemini:           gemini mcp add ${name} npx -y ${npm}
@@ -210,11 +214,14 @@ streamable-http:  { mcpServers: { [name]: { type: 'stdio', command: 'npx', args:
 
 // Remote (http) — from record.endpoint
 claude-code:      claude mcp add --transport http ${name} ${endpoint}
+cline:            { mcpServers: { [name]: { type: 'streamableHttp', url: endpoint } } }
 codex:            codex mcp add ${name} --url ${endpoint}
 cursor:           { mcpServers: { [name]: { url: endpoint } } }
 gemini:           gemini mcp add --transport http ${name} ${endpoint}
 streamable-http:  { mcpServers: { [name]: { type: 'http', url: endpoint } } }
-curl:             curl -X POST ${endpoint} ... (initialize probe)
+curl:             curl -X POST ${endpoint} -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
+                    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",...}}'
+                    (legacy initialize probe; no MCP-Protocol-Version header, which the spec requires only after initialization)
 ```
 
 ---
@@ -238,8 +245,8 @@ z.object({
   category: z.enum(['research', 'government', 'public-data', 'utility']).optional().describe(
     'Filter by catalog category. Omit to search all categories.'
   ),
-  limit: z.number().int().min(1).max(20).default(5).describe(
-    'Maximum number of results to return (1-20). Default 5.'
+  limit: z.number().int().min(1).max(1000).default(5).describe(
+    'Maximum number of results to return (1-1000). Default 5. At most 20 per call: a larger limit returns up to 20, with a notice naming the offset to continue from when more matches follow.'
   ),
   offset: z.number().int().min(0).default(0).describe('Ranked-result offset; use nextOffset to continue.'),
   serversOffset: z.number().int().min(0).default(0).describe('Independent roll-up offset, 10 per page; must be zero in servers scope.'),
@@ -259,7 +266,7 @@ z.object({
       'Tool name (snake_case) or server name (kebab-case) depending on scope.'
     ),
     server: z.string().describe(
-      'Server package name that owns this tool. Same as name when scope is "servers".'
+      'Server package name that owns this tool. Same as name when scope is "servers". Pass name and server to cyanheads_describe_entry to describe exactly this row.'
     ),
     brief: z.string().describe('One-line summary of what this tool or server does.'),
     category: z.enum(['research', 'government', 'public-data', 'utility']).describe(
@@ -293,7 +300,10 @@ z.object({
 enrichment: {
   effectiveQuery: z.string().describe('The query that was searched.'),
   totalCount: z.number().describe('Total relevant matches before the limit was applied.'),
-  notice: z.string().optional().describe('Guidance for zero matches or an exhausted result page.'),
+  truncated: z.boolean().optional().describe('True when limit exceeded the 20-per-call cap and more matches follow this page.'),
+  shown: z.number().optional().describe('Results returned on this capped page.'),
+  cap: z.number().optional().describe('Per-call result cap that was applied.'),
+  notice: z.string().optional().describe('Guidance for zero matches, an exhausted result page, or a page cut to the 20-per-call cap with more matches following (names the offset to continue from). Absent otherwise.'),
 }
 ```
 
@@ -303,6 +313,7 @@ enrichment: {
 - The `servers` roll-up is present only for `scope: 'tools'`, ordered by `topScore` descending (name-tiebroken) and capped at 10 per page; `serversTotal` carries the true distinct count. `matchedTools` and `topScore` come from the full tool match set, independently of both offsets and the result limit.
 - `offset` and `serversOffset` default to zero and advance independently through nullable `nextOffset` and `nextServersOffset`. Continue with the same query, scope, category, and limit. Pages use the current catalog; a refresh can change ordering. Beyond-end offsets return empty pages with the full totals and null continuation. Servers scope omits every roll-up field and rejects a nonzero `serversOffset`.
 - Zero matches are a successful empty response — `results: []` plus a `notice` on how to broaden the search — not an error.
+- `limit` accepts 1-1000 but one call returns at most 20 results. A larger `limit` is served, not rejected, since it has one reading: return the first 20, and when more matches follow, call `ctx.enrich.truncated` for `truncated: true`, `shown`, `cap: 20`, and a `notice` naming the requested limit, the remaining count, and `nextOffset` (`limit 100 exceeds the per-call cap of 20; 23 more results follow. Continue with offset 20.`). A page that holds every remaining match carries no truncation fields. `nextOffset` and `totalCount` keep their formulas, so continuing with the same oversized `limit` pages through every match exactly once. The 1000 ceiling only separates "return everything" from garbage input such as `1e6`; it bounds no cost, because the full match set is ranked before the slice.
 
 **Error contract:**
 
@@ -331,20 +342,25 @@ errors: [
 ```ts
 z.object({
   name: z.string().min(1).max(64).describe(
-    'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names.'
+    'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server.'
+  ),
+  server: z.string().min(1).max(64).optional().describe(
+    'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with this name. 1-64 characters, resolved like a server name. Required when the tool name has more than one owner; with a server name, it must name the same server.'
   ),
   kind: z.enum(['tool', 'server']).optional().describe(
     'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
   ),
-  client: z.enum(['claude-code', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http']).optional().describe(
-    'Return install snippets for this client only (both local and remote transports when available). Omit for all supported clients.'
+  client: z.enum(CLIENT_IDS).optional().describe(   // 'claude-code' | 'cline' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http'
+    'Return install snippets for this client only (both local and remote transports when available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a connectivity probe for hosted servers. Omit for all supported clients.'
   ),
 })
 ```
 
 **Output schema** — `z.object({ result: z.discriminatedUnion('kind', [...]) })`. The framework's `tool()` requires a top-level `ZodObject`; the discriminated union is wrapped in `result` so `format()` can dispatch on `result.kind`. Branches as documented in `describe-entry.tool.ts`.
 
-**Error contract:** `not_found`, `ambiguous_kind`, `catalog_empty`. See `describe-entry.tool.ts` for full text.
+**Resolution:** without `server`, a tool name resolves to every row with that exact spelling, else to every row of a case-insensitive match that has one spelling; several spellings resolve to nothing. More than one owning row fails with `ambiguous_owner` (`ValidationError`), naming the owners in payload order in the message and `data.owners`. With `server`, the server resolves like a server name, then the tool name matches that owner's rows exactly, then by unique case-insensitive match; a server name must resolve to the same server. The self record answers only when no remote candidate exists, or when `server` names this server and its remote entry lacks the tool.
+
+**Error contract:** `not_found`, `ambiguous_kind`, `ambiguous_owner`, `catalog_empty`. See `describe-entry.tool.ts` for full text.
 
 ---
 
@@ -360,7 +376,9 @@ None. The catalog has no stable per-record URI worth bookmarking, and a `fleet:/
 
 Owns the in-memory catalog and search.
 
-The provider collapses identical exact-case tool duplicates within each server, then identical server records after tool normalization, keeping the first in payload order. Conflicting descriptions, metadata, or vectors reject the payload before index replacement. A bounded load-time warning reports collapsed identities. Distinct case variants and identical tool spellings under different owners remain distinct inventory rows. This keeps search, descriptions, counts, and packed vectors consistent while accepting catalogs with harmless repeated records. Empty server arrays fail validation; zero-tool servers remain valid. A failed refresh retains the prior records, vectors, counts, and initialization timestamp.
+The provider collapses identical exact-case tool duplicates within each server, then identical server records after tool normalization, keeping the first in payload order. Conflicting descriptions, metadata, or vectors reject the payload before index replacement. A bounded load-time warning reports collapsed identities. Distinct case variants and identical tool spellings under different owners remain distinct inventory rows. This keeps search, descriptions, counts, and packed vectors consistent while accepting catalogs with harmless repeated records. Empty server arrays fail validation; zero-tool servers remain valid.
+
+The service computes each server and tool vector's norm in float64 from the payload values, scaled by the vector's largest component so squaring can neither overflow nor underflow, and packs the normalized row, so every score is a cosine and no packed component can overflow float32. A vector with the wrong dimension or all zeros rejects the payload, naming the server or `server/tool`; a non-finite component already failed schema validation in the provider, which names its payload path. A load whose input norms deviate from 1 by more than `1e-4` logs one warning with the count, the largest deviation, and up to ten identities. The index is built in full before it replaces the previous one, so a failed refresh retains the prior records, vectors, lookups, counts, and initialization timestamp, and logs why.
 
 ```ts
 interface ICatalogService {
@@ -376,11 +394,19 @@ interface ICatalogService {
   }): Promise<CatalogSearchResult[]>;
 
   /**
+   * Every candidate row in payload order: all owners of the exact name, else
+   * all owners of a single-spelling case-insensitive match, else this server's
+   * own tool. `server` narrows to one owner (exact, then unique case-insensitive)
+   * and reaches the self tool when it names this server. The caller turns several
+   * candidates into `ambiguous_owner`. Output is canonical.
+   */
+  getTool(name: string, server?: string): CatalogToolEntry[];
+
+  /**
    * Exact remote lookup first, then a unique case-insensitive remote match.
    * Ambiguous folds return null; only no remote candidate reaches the static
-   * self record for `cyanheads-mcp-server` and its own tools. Output is canonical.
+   * self record for `cyanheads-mcp-server`. Output is canonical.
    */
-  getTool(name: string): CatalogTool & { serverRecord: CatalogRecord } | null;
   getServer(name: string): CatalogRecord | null;
 
   /** List all categories present in the catalog. */
@@ -394,6 +420,8 @@ interface ICatalogService {
 }
 
 type CatalogCategory = 'research' | 'government' | 'public-data' | 'utility';
+
+type CatalogToolEntry = CatalogTool & { serverRecord: CatalogRecord };
 
 interface CatalogSearchResult {
   name: string;
@@ -422,7 +450,7 @@ The runtime is shared between the catalog initialization sanity-check (verifies 
 
 ### `RemoteJsonCatalogProvider`
 
-Fetches `CATALOG_URL`, validates the v2 payload with Zod, and requires a nonempty server array. Identical exact-name duplicates collapse after nested tool normalization; conflicting records fail before the service replaces its index. The service checks the model and vector dimensions and owns the cached index.
+Fetches `CATALOG_URL`, validates the v2 payload with Zod, and requires a nonempty server array. Identical exact-name duplicates collapse after nested tool normalization; conflicting records fail before the service replaces its index. The service checks the model, normalizes and validates every vector, and owns the cached index.
 
 ---
 
@@ -467,7 +495,7 @@ No Cloudflare Workers, Vectorize, KV, D1, or Durable Objects. The server runs on
 The README serves the hosted endpoint, not the source tree. Order from top to bottom:
 
 1. **Headline:** what the endpoint does, the URL to add. Below the title before any other content.
-2. **Add it to your client:** the four install snippets (Claude Desktop, Claude Code, Cursor, Cline) presented as copy-paste blocks.
+2. **Add it to your client:** copy-paste install blocks for the clients that take a remote config (Claude Code, Cursor, Cline), plus a pointer to Claude Desktop's Settings → Connectors, where it adds remote servers.
 3. **What's in the fleet:** category counts, sample queries, a visual or table.
 4. **How it works (one paragraph):** semantic search over a hosted catalog of MCP servers; agents ask "what handles X?" and get an install snippet for their client.
 5. **Self-hosting (collapsed or short):** for the rare cloner. Setup, env vars, build steps.
@@ -538,6 +566,8 @@ Portfolio side:
 
 - **L2 normalize at build time.** Pre-normalizing document vectors lets the runtime cosine similarity collapse to a dot product. Saves one division per row per query.
 
+- **Normalize again at load; reject only vectors that can't be normalized.** The catalog is produced in another repo, and the defects a producer realistically ships (skipped normalization, normalizing before truncation, coarser rounding) change a vector's length but keep its direction. Normalizing at load keeps those scores true cosines at a cost paid once per load, never per query. Rejecting them instead would stall refreshes and fail startup at the next restart over a catalog that is still usable. A wrong dimension or an all-zero vector leaves no direction to keep, so it rejects the payload. The norm is scaled by the vector's largest component before squaring: naive squaring overflows above about `1e154` and underflows below about `1e-154`, which would reject or distort vectors that normalize cleanly. The `1e-4` tolerance gates only the warning: about 100× the drift that six-decimal rounding leaves in published vectors (under `1e-6`).
+
 - **Background poll, not webhook.** Catalog changes maybe weekly. An hourly poll is good enough for v0, requires zero new infrastructure, and is restartable to force fresh state. A Cloudflare Pages deploy hook → VPS endpoint is a clean upgrade path if propagation latency ever matters.
 
 - **`cyanheads_invoke` excluded from Phase 1.** The gateway shape is real Phase 2 work — auth, quotas, MCP client pool, recursion guard, dispatch validation. Shipping it half-finished or stubbed in v0 dilutes the surface. Phase 1 = discovery only.
@@ -546,7 +576,9 @@ Portfolio side:
 
 - **The catalog supports hosted and local-only servers.** An optional `endpoint` controls HTTP snippets; the npm package supplies local stdio snippets. Endpoint-less entries such as `mailchimp-mcp-server` expose their required environment variables alongside install guidance.
 
-- **Self descriptions use a local fallback.** `src/services/catalog/self-record.ts` derives version and description from `package.json` and tools from the registered definitions. Exact remote names win, then unique case-insensitive remote matches; ambiguous folds return no match. Only the absence of a remote candidate reaches self, so remote metadata takes precedence after any refresh. The self record stays outside the vector index and is reachable only through name lookup.
+- **Self descriptions use a local fallback.** `src/services/catalog/self-record.ts` derives version and description from `package.json` and tools from the registered definitions. Exact remote names win, then unique case-insensitive remote matches; ambiguous folds return no match. Only the absence of a remote candidate (under the named owner, when `server` is set) reaches self, so remote metadata takes precedence after any refresh. The self record stays outside the vector index and is reachable only through name lookup.
+
+- **Shared tool names resolve by owner, and ambiguity is an error.** Same-spelling tools under different servers stay separate search rows, so `cyanheads_describe_entry` takes an optional `server` that pairs with a result's `name` to describe exactly that row. Without it, a name with several owners fails with `ambiguous_owner` rather than returning whichever owner came last in payload order. An error, like `ambiguous_kind`, rather than a success listing candidates: a candidates result would add a third `result.kind` with no install snippets. Rejecting catalogs with shared names was ruled out because shared spellings are a valid catalog state and rejecting a whole payload over one name would stall refreshes.
 
 - **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. `CatalogService.initialize()` validates server names at load time and rejects entries with underscores so the heuristic stays reliable.
 
