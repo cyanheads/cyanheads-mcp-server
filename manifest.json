@@ -48,14 +48,14 @@
     "catalog_fetch_timeout_ms": {
       "type": "string",
       "title": "Catalog Fetch Timeout",
-      "description": "Per-request timeout for fleet.json fetches in milliseconds. Must be greater than 0.",
+      "description": "Per-request timeout for fleet.json fetches: integer milliseconds from 1 to 2147483647.",
       "required": false,
       "default": "10000"
     },
     "catalog_refresh_seconds": {
       "type": "string",
       "title": "Catalog Refresh Interval",
-      "description": "Background poll interval for fleet.json refreshes in seconds. Set to 0 to disable background refresh.",
+      "description": "Background poll interval for fleet.json refreshes in seconds. 0 disables refresh; positive values up to 2147483.647 use the runtime's millisecond timer resolution.",
       "required": false,
       "default": "3600"
     },

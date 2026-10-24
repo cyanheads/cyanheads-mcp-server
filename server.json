@@ -37,14 +37,14 @@
         },
         {
           "name": "CATALOG_FETCH_TIMEOUT_MS",
-          "description": "Per-request timeout for fleet.json fetches in milliseconds. Must be > 0.",
+          "description": "Per-request timeout for fleet.json fetches: integer milliseconds from 1 to 2147483647.",
           "format": "string",
           "isRequired": false,
           "default": "10000"
         },
         {
           "name": "CATALOG_REFRESH_SECONDS",
-          "description": "Background poll interval for fleet.json refresh. 0 disables; otherwise must be > 0.",
+          "description": "Background poll interval for fleet.json refreshes in seconds. 0 disables refresh; positive values up to 2147483.647 use the runtime's millisecond timer resolution.",
           "format": "string",
           "isRequired": false,
           "default": "3600"
@@ -123,14 +123,14 @@
         },
         {
           "name": "CATALOG_FETCH_TIMEOUT_MS",
-          "description": "Per-request timeout for fleet.json fetches in milliseconds. Must be > 0.",
+          "description": "Per-request timeout for fleet.json fetches: integer milliseconds from 1 to 2147483647.",
           "format": "string",
           "isRequired": false,
           "default": "10000"
         },
         {
           "name": "CATALOG_REFRESH_SECONDS",
-          "description": "Background poll interval for fleet.json refresh. 0 disables; otherwise must be > 0.",
+          "description": "Background poll interval for fleet.json refreshes in seconds. 0 disables refresh; positive values up to 2147483.647 use the runtime's millisecond timer resolution.",
           "format": "string",
           "isRequired": false,
           "default": "3600"

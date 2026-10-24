@@ -60,7 +60,7 @@ describe('server config bounds', () => {
   });
 
   describe('CATALOG_FETCH_TIMEOUT_MS', () => {
-    it.each(['1', '500', '60000'])('accepts %s', (value) => {
+    it.each(['1', '500', '60000', '2147483647'])('accepts %s', (value) => {
       expect(parseWith('CATALOG_FETCH_TIMEOUT_MS', value).catalogFetchTimeoutMs).toBe(
         Number(value),
       );
@@ -77,6 +77,12 @@ describe('server config bounds', () => {
         /CATALOG_FETCH_TIMEOUT_MS/,
       );
     });
+
+    it.each(['0.5', '1.5', '2147483648'])('rejects unsafe timer value %s', (value) => {
+      expect(() => parseWith('CATALOG_FETCH_TIMEOUT_MS', value)).toThrow(
+        /CATALOG_FETCH_TIMEOUT_MS/,
+      );
+    });
   });
 
   describe('CATALOG_REFRESH_SECONDS', () => {
@@ -84,15 +90,24 @@ describe('server config bounds', () => {
       expect(parseWith('CATALOG_REFRESH_SECONDS', '0').catalogRefreshSeconds).toBe(0);
     });
 
-    it.each(['1', '3600'])('accepts %s', (value) => {
-      expect(parseWith('CATALOG_REFRESH_SECONDS', value).catalogRefreshSeconds).toBe(Number(value));
-    });
+    it.each(['0.0001', '0.001', '0.0015', '0.5', '1', '1.0005', '1.001', '3600', '2147483.647'])(
+      'accepts %s',
+      (value) => {
+        expect(parseWith('CATALOG_REFRESH_SECONDS', value).catalogRefreshSeconds).toBe(
+          Number(value),
+        );
+      },
+    );
 
     it.each(['-1', '-5'])('rejects %s (must be 0 or positive)', (value) => {
       expect(() => parseWith('CATALOG_REFRESH_SECONDS', value)).toThrow(/CATALOG_REFRESH_SECONDS/);
     });
 
     it.each(['Infinity', 'hourly'])('rejects %s (must be a finite number)', (value) => {
+      expect(() => parseWith('CATALOG_REFRESH_SECONDS', value)).toThrow(/CATALOG_REFRESH_SECONDS/);
+    });
+
+    it.each(['2147483.648'])('rejects unsafe timer value %s', (value) => {
       expect(() => parseWith('CATALOG_REFRESH_SECONDS', value)).toThrow(/CATALOG_REFRESH_SECONDS/);
     });
   });

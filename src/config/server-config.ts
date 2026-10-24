@@ -18,27 +18,30 @@ const ServerConfigSchema = z.object({
     .describe('URL of the remote fleet.json catalog endpoint.'),
 
   /**
-   * Timeout in milliseconds for the remote catalog fetch. Must be a positive,
-   * finite duration — a zero or negative timeout aborts every fetch before it
-   * can complete. `z.coerce.number()` already rejects NaN and Infinity.
+   * AbortSignal.timeout requires integer milliseconds. Keep the same signed
+   * 32-bit ceiling as the background timer, avoiding runtime-specific overflow.
    */
   catalogFetchTimeoutMs: z.coerce
     .number()
-    .positive()
+    .int()
+    .min(1)
+    .max(2_147_483_647)
     .default(10000)
-    .describe('HTTP timeout for remote catalog fetch in milliseconds. Must be > 0.'),
+    .describe('HTTP timeout for remote catalog fetch: integer milliseconds, 1–2147483647.'),
 
   /**
    * Background poll interval. The service re-fetches fleet.json on this cadence
    * and swaps in the new vector index if `generatedAt` changed.
-   * Set to 0 to disable background refresh; any other value must be positive.
+   * Set to 0 to disable background refresh. Fractional seconds retain the
+   * runtime's millisecond timer resolution within setInterval's signed range.
    */
   catalogRefreshSeconds: z.coerce
     .number()
     .nonnegative()
+    .max(2_147_483.647)
     .default(3600)
     .describe(
-      'Seconds between background catalog re-fetches. 0 disables background refresh; otherwise must be > 0.',
+      'Seconds between background catalog re-fetches: 0 disables refresh; positive values up to 2147483.647 use the runtime timer resolution.',
     ),
 
   /**
