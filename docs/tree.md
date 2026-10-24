@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-10-18 22:31:57
+Generated on: 2026-10-24 18:54:45
 
 ```text
 cyanheads-mcp-server/
@@ -120,8 +120,11 @@ cyanheads-mcp-server/
 │   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── scripts/
+│   ├── portable-licenses/
+│   │   └── onnxruntime.LICENSE
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── bundle-portable.ts
 │   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
@@ -134,6 +137,8 @@ cyanheads-mcp-server/
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── portable-bundle.ts
+│   ├── portable-transformers.mjs
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
@@ -170,6 +175,8 @@ cyanheads-mcp-server/
 │   │   ├── catalog-regressions.int.test.ts
 │   │   ├── error-envelope.int.test.ts
 │   │   └── tool-contracts.int.test.ts
+│   ├── packaging/
+│   │   └── portable-bundle.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
