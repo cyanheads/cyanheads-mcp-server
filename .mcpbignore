@@ -4,6 +4,7 @@
 *.tsbuildinfo
 /.claude/
 /.agents/
+/.cache/
 /.github/
 /.vscode/
 /Dockerfile

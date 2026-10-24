@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -46,6 +46,7 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 - Results carry cosine-similarity `score` (`[0, 1]`, comparable within one response). Tool searches include a `servers` roll-up with ten entries per page and `serversTotal`; an unloaded catalog returns retryable `catalog_empty`.
 - Page results with `offset` and the tools-scope roll-up independently with `serversOffset` (both default to 0). Reuse the same query, scope, category, and limit with `nextOffset` / `nextServersOffset`; null means exhausted. Each call uses the current catalog, so a refresh between pages can change ordering. Servers scope requires `serversOffset: 0` and omits roll-up fields.
 - `SIMILARITY_FLOOR` (default `0.3`) filters matches before the limit applies.
+- An empty `category` string is treated as omitted; other unknown category values are rejected.
 
 ---
 
@@ -53,6 +54,7 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 
 - `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. Exact names win, then unique case-insensitive names; output uses canonical names. `client` optionally selects `claude-code`, `cline`, `codex`, `cursor`, `gemini`, `streamable-http` (generic `mcpServers` JSON), or `curl`.
 - `server` (optional, 1–64 characters) names the owning server: a search result's `name` + `server` describes exactly that row, in either scope. It is required when more than one server owns the tool name; with a server name, it must name the same server.
+- Empty `kind`, `client`, and `server` strings are treated as omitted. Other unknown `kind` or `client` values are rejected.
 - Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets.
 - Descriptions are catalog text; obtain tool schemas from the connected server's `tools/list`.
 - Failures return `not_found`, `ambiguous_kind` (set `kind`), `ambiguous_owner` (set `server`; the error lists the owners), or retryable `catalog_empty`.
@@ -114,6 +116,10 @@ For Cursor (`mcp.json`):
 ```
 
 Claude Desktop adds remote servers under Settings → Connectors.
+
+### Claude Desktop bundle
+
+Download the [MCPB bundle](https://github.com/cyanheads/cyanheads-mcp-server/releases/latest/download/cyanheads-mcp-server.mcpb) for a local stdio install. It includes ONNX WebAssembly inference, so it does not need platform-specific native libraries. The first start downloads the embedding model; subsequent starts reuse the model cache. npm and Docker installs use native CPU inference.
 
 ### Self-Hosted / Local
 
@@ -219,8 +225,8 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `MCP_SESSION_MODE` | HTTP session posture: `auto`, `stateful`, or `stateless`. `src/index.ts` declares `stateless`; set this only to override it. | `stateless` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
 | `CATALOG_URL` | Remote fleet.json endpoint (schema v2 with baked embeddings). Must be an absolute URL. Override to front your own fleet. | `https://caseyjhand.com/fleet.json` |
-| `CATALOG_FETCH_TIMEOUT_MS` | Per-request timeout for fleet.json fetches in ms. Must be > 0. | `10000` |
-| `CATALOG_REFRESH_SECONDS` | Background poll interval for fleet.json refresh. `0` disables; otherwise must be > 0. | `3600` |
+| `CATALOG_FETCH_TIMEOUT_MS` | Per-request timeout for fleet.json fetches: integer milliseconds, `1`–`2147483647`. | `10000` |
+| `CATALOG_REFRESH_SECONDS` | Background poll interval for fleet.json refresh. `0` disables; positive values up to `2147483.647` seconds use the runtime's millisecond timer resolution. | `3600` |
 | `EMBEDDING_MODEL_ID` | Hugging Face model id for query embedding. Must match `fleet.json.embeddingModel`. | `Snowflake/snowflake-arctic-embed-m-v1.5` |
 | `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search_catalog` results. Must be within `[0, 1]`. | `0.3` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |

@@ -7,7 +7,7 @@
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
 | `cyanheads_search_catalog` | Semantic search across fleet tools and servers. Returns ranked matches with brief summaries and the server each tool belongs to. | `query`, `scope`, `category`, `limit`, `offset`, `serversOffset` | `readOnlyHint: true`, `openWorldHint: false` |
-| `cyanheads_describe_entry` | Description, tool list, connection URL, and per-client install snippets for a named tool or server. | `name`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
+| `cyanheads_describe_entry` | Description, tool list, connection URL, and per-client install snippets for a named tool or server. | `name`, `server`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
 | `cyanheads_invoke` *(Phase 2)* | Passthrough dispatch to a fleet backend. Deferred. | — | — |
 
 ### Resources
@@ -66,7 +66,7 @@ The single most important property: **document embeddings are produced once, at 
 | Stored dims (Matryoshka truncated) | **256** |
 | Query prefix | `"Represent this sentence for searching relevant passages: "` |
 | License | Apache 2.0 |
-| Runtime | `@huggingface/transformers` v4+ (ONNX via WebGPU/CPU) |
+| Runtime | `@huggingface/transformers` 4.3.1; native ONNX CPU for npm/Docker, ONNX WASM for MCPB |
 | Source | [Snowflake/snowflake-arctic-embed-m-v1.5 on HF](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) |
 
 Matryoshka truncation to 256 dims preserves ~99% of full-768 quality per Snowflake's published evaluation and stores one-third as many vector components per catalog entry.
@@ -134,7 +134,7 @@ interface FleetPayload {
 
 /** A single tool entry, with its embedding inlined. */
 interface CatalogTool {
-  name: string;                         // snake_case (e.g. "earthquake_search")
+  name: string;                         // snake_case (e.g. "earthquake_search_events")
   description: string;
   embedding: number[];                  // length === FleetPayload.embeddingDims, L2-normalized
 }
@@ -242,7 +242,7 @@ z.object({
   scope: z.enum(['tools', 'servers']).default('tools').describe(
     'What to search. "tools" returns individual tool matches; "servers" returns server-level matches.'
   ),
-  category: z.enum(['research', 'government', 'public-data', 'utility']).optional().describe(
+  category: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['research', 'government', 'public-data', 'utility']).optional()).describe(
     'Filter by catalog category. Omit to search all categories.'
   ),
   limit: z.number().int().min(1).max(1000).default(5).describe(
@@ -342,15 +342,15 @@ errors: [
 ```ts
 z.object({
   name: z.string().min(1).max(64).describe(
-    'Tool name (snake_case, e.g. "earthquake_search") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server.'
+    'Tool name (snake_case, e.g. "earthquake_search_events") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server.'
   ),
   server: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(64).optional()).describe(   // a form client's blank reads as unset
     'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with this name. 1-64 characters, resolved like a server name. Required when the tool name has more than one owner; with a server name, it must name the same server.'
   ),
-  kind: z.enum(['tool', 'server']).optional().describe(
+  kind: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['tool', 'server']).optional()).describe(
     'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
   ),
-  client: z.enum(CLIENT_IDS).optional().describe(   // 'claude-code' | 'cline' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http'
+  client: z.preprocess((v) => (v === '' ? undefined : v), z.enum(CLIENT_IDS).optional()).describe(   // 'claude-code' | 'cline' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http'
     'Return install snippets for this client only (both local and remote transports when available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a connectivity probe for hosted servers. Omit for all supported clients.'
   ),
 })
@@ -448,6 +448,8 @@ interface IEmbeddingsRuntime {
 
 The runtime is shared between the catalog initialization sanity-check (verifies model loads) and the search hot path.
 
+The MCPB packaging step stages a separate adapter and local ONNX WASM assets, then rewrites only the staged embedding import. The npm build retains its native backend. Both paths use fp32 inference, CLS pooling, the catalog's query prefix, and the same Matryoshka truncation and normalization. WASM runs with one thread and stores downloaded model files in a filesystem cache honoring `HF_HOME` / `TRANSFORMERS_CACHE`. Transformers stays pinned to 4.3.1 because the adapter uses its internal ONNX injection point; upgrades require verifying that integration and search parity again.
+
 ### `RemoteJsonCatalogProvider`
 
 Fetches `CATALOG_URL`, validates the v2 payload with Zod, and requires a nonempty server array. Identical exact-name duplicates collapse after nested tool normalization; conflicting records fail before the service replaces its index. The service checks the model, normalizes and validates every vector, and owns the cached index.
@@ -459,8 +461,8 @@ Fetches `CATALOG_URL`, validates the v2 payload with Zod, and requires a nonempt
 | Env Var | Required | Default | Description |
 |:--------|:---------|:--------|:------------|
 | `CATALOG_URL` | No | `https://caseyjhand.com/fleet.json` | Remote fleet.json endpoint. Absolute URL; must return a valid `FleetPayload` (version "2"). |
-| `CATALOG_FETCH_TIMEOUT_MS` | No | `10000` | HTTP fetch timeout. Must be > 0. |
-| `CATALOG_REFRESH_SECONDS` | No | `3600` | Background poll interval. Server re-fetches and swaps if `generatedAt` changed. `0` disables; otherwise must be > 0. |
+| `CATALOG_FETCH_TIMEOUT_MS` | No | `10000` | HTTP fetch timeout in integer milliseconds, `1`–`2147483647`. |
+| `CATALOG_REFRESH_SECONDS` | No | `3600` | Background poll interval. Server re-fetches and swaps if `generatedAt` changed. `0` disables; positive values up to `2147483.647` seconds use the runtime's millisecond timer resolution. |
 | `EMBEDDING_MODEL_ID` | No | `Snowflake/snowflake-arctic-embed-m-v1.5` | Must match `FleetPayload.embeddingModel`; mismatch is a startup error. |
 | `SIMILARITY_FLOOR` | No | `0.3` | Minimum cosine similarity for a result to appear in `cyanheads_search_catalog` output. Must be within `[0, 1]`. |
 | `MCP_AUTH_MODE` | No | `none` | Framework default for v0 public discovery. |
