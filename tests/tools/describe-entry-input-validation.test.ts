@@ -211,6 +211,16 @@ describe('cyanheads_describe_entry — input validation', () => {
     expect(schema.properties.server).toMatchObject({ type: 'string', minLength: 1, maxLength: 64 });
     expect(schema.required).toEqual(['name']);
   });
+
+  it('advertises optional kind and client enums without blank members', () => {
+    const schema = z.toJSONSchema(describeEntryTool.input);
+    expect(schema.required).toEqual(['name']);
+    expect(schema.properties?.kind).toMatchObject({ type: 'string', enum: ['tool', 'server'] });
+    expect(schema.properties?.client).toMatchObject({
+      type: 'string',
+      enum: ['claude-code', 'cline', 'codex', 'cursor', 'curl', 'gemini', 'streamable-http'],
+    });
+  });
 });
 
 describe('cyanheads_describe_entry — handler behavior', () => {
@@ -254,6 +264,71 @@ describe('cyanheads_describe_entry — handler behavior', () => {
     expect(blank.structuredContent).toMatchObject({
       result: { kind: 'tool', server: 'earthquake-mcp-server' },
     });
+  });
+
+  it.each([
+    { kind: 'tool', client: 'codex' },
+    { kind: null, client: null },
+  ])('preserves canonical enum values and optional-null repair for %j', async (fields) => {
+    const result = await runToolContract(describeEntryTool, {
+      name: 'earthquake_search',
+      ...fields,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      result: { kind: 'tool', name: 'earthquake_search', server: 'earthquake-mcp-server' },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('earthquake_search'),
+        }),
+      ]),
+    );
+  });
+
+  it.each([{ kind: '' }, { client: '' }, { kind: '', client: '', server: '' }])(
+    'treats blank optional fields %j as omitted on both response surfaces',
+    async (fields) => {
+      const omitted = await runToolContract(describeEntryTool, { name: 'earthquake_search' });
+      const blank = await runToolContract(describeEntryTool, {
+        name: 'earthquake_search',
+        ...fields,
+      });
+      expect(blank.isError).not.toBe(true);
+      expect(blank.structuredContent).toMatchObject({
+        result: { kind: 'tool', name: 'earthquake_search', server: 'earthquake-mcp-server' },
+      });
+      expect(blank.structuredContent).toEqual(omitted.structuredContent);
+      expect(blank.content).toEqual(omitted.content);
+    },
+  );
+
+  it.each([
+    { kind: 'TOOL' },
+    { kind: ' ' },
+    { kind: 17 },
+    { client: 'CODEX' },
+    { client: ' ' },
+    { client: 17 },
+  ])('keeps invalid optional values %j rejected with recovery', async (fields) => {
+    const result = await runToolContract(describeEntryTool, {
+      name: 'earthquake_search',
+      ...fields,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: { data: { reason: 'invalid_arguments' } },
+    });
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('Invalid option: expected one of'),
+        }),
+      ]),
+    );
   });
 
   it('tool result includes owning-server install snippets', async () => {

@@ -33,7 +33,7 @@ export interface CatalogTool {
    * validation rejects a non-finite component.
    */
   embedding: number[];
-  /** Fully-qualified name: snake_case (e.g. "earthquake_search"). */
+  /** Fully-qualified name: snake_case (e.g. "earthquake_search_events"). */
   name: string;
 }
 

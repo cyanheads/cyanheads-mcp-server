@@ -54,8 +54,10 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
         'What to search. "tools" returns individual tool matches; "servers" returns server-level matches.',
       ),
     category: z
-      .enum(['research', 'government', 'public-data', 'utility'])
-      .optional()
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.enum(['research', 'government', 'public-data', 'utility']).optional(),
+      )
       .describe('Filter by catalog category. Omit to search all categories.'),
     limit: z
       .number()

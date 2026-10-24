@@ -226,6 +226,67 @@ describe('cyanheads_search_catalog — input validation', () => {
   });
 
   describe('category field', () => {
+    it.each([0, 1])(
+      'treats blank category as omitted at offset %i on both surfaces',
+      async (offset) => {
+        const omitted = await runToolContract(searchCatalogTool, { query: 'seismic', offset });
+        const blank = await runToolContract(searchCatalogTool, {
+          query: 'seismic',
+          offset,
+          category: '',
+        });
+        expect(blank.isError).not.toBe(true);
+        expect(blank.structuredContent).toMatchObject({ totalCount: 1, nextOffset: null, offset });
+        expect(blank.structuredContent).toEqual(omitted.structuredContent);
+        expect(blank.content).toEqual(omitted.content);
+      },
+    );
+
+    it.each(['PUBLIC-DATA', ' ', 17])(
+      'keeps invalid category %j rejected with recovery',
+      async (category) => {
+        const result = await runToolContract(searchCatalogTool, { query: 'seismic', category });
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: { data: { reason: 'invalid_arguments' } },
+        });
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'text',
+              text: expect.stringContaining('Invalid option: expected one of'),
+            }),
+          ]),
+        );
+      },
+    );
+
+    it('advertises the existing optional category enum', () => {
+      const schema = z.toJSONSchema(searchCatalogTool.input);
+      expect(schema.required).not.toContain('category');
+      expect(schema.properties?.category).toMatchObject({
+        type: 'string',
+        enum: ['research', 'government', 'public-data', 'utility'],
+      });
+    });
+
+    it('preserves category filtering with a repaired numeric limit', async () => {
+      const wireInput: { query: string; category: string; limit: number | string } = {
+        query: 'seismic',
+        category: 'public-data',
+        limit: '1',
+      };
+      const result = await runToolContract(
+        searchCatalogTool,
+        wireInput as z.input<typeof searchCatalogTool.input>,
+      );
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        results: [{ name: 'earthquake_search', category: 'public-data' }],
+        totalCount: 1,
+      });
+    });
+
     it('rejects an unknown category string', () => {
       expect(() =>
         searchCatalogTool.input.parse({ query: 'test', category: 'not-a-real-category' }),

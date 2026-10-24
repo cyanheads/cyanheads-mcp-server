@@ -37,7 +37,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       .min(1)
       .max(NAME_MAX_LENGTH)
       .describe(
-        'Tool name (snake_case, e.g. "earthquake_search") or server name ' +
+        'Tool name (snake_case, e.g. "earthquake_search_events") or server name ' +
           '(kebab-case, e.g. "earthquake-mcp-server"). 1-' +
           `${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server. Use cyanheads_search_catalog to discover valid names.`,
       ),
@@ -53,15 +53,16 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
           'name has more than one owner; with a server name, it must name the same server.',
       ),
     kind: z
-      .enum(['tool', 'server'])
-      .optional()
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.enum(['tool', 'server']).optional(),
+      )
       .describe(
         'Whether name refers to a tool or server. Omit to auto-detect: names containing ' +
           'underscores are treated as tools; names containing hyphens are treated as servers.',
       ),
     client: z
-      .enum(CLIENT_IDS)
-      .optional()
+      .preprocess((value) => (value === '' ? undefined : value), z.enum(CLIENT_IDS).optional())
       .describe(
         'Return install snippets for this client only (both local and remote transports when ' +
           'available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a ' +
@@ -150,7 +151,9 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .array(
                 z
                   .object({
-                    name: z.string().describe('Tool name (snake_case, e.g. "earthquake_search").'),
+                    name: z
+                      .string()
+                      .describe('Tool name (snake_case, e.g. "earthquake_search_events").'),
                     description: z.string().describe('Brief description of what the tool does.'),
                   })
                   .describe('A single tool exposed by this server.'),
