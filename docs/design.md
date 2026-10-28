@@ -150,7 +150,7 @@ interface CatalogRecord {
   github: string;
   version: string;                      // captured at generation time
   auth: string;                         // open string; currently "none"
-  requiredEnvVars?: string[];           // env var names the local install needs; scaffolded into JSON snippets
+  requiredEnvVars?: string[];           // env vars the server's manifest marks isRequired; scaffolded into JSON snippets
   embedding: number[];                  // length === FleetPayload.embeddingDims, L2-normalized
   tools: CatalogTool[];
 }

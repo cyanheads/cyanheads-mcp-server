@@ -89,7 +89,9 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
             requiredEnvVars: z
               .array(z.string())
               .optional()
-              .describe('Environment variable names required for local installation.'),
+              .describe(
+                "Environment variable names the owning server's manifest marks required for a local install; a key the manifest leaves optional is not listed.",
+              ),
             installNotice: z
               .string()
               .optional()
@@ -138,7 +140,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .array(z.string())
               .optional()
               .describe(
-                'Env var names the local (stdio) install requires (e.g. ["MAILCHIMP_API_KEY"]). Absent when none.',
+                'Env var names the server\'s manifest marks required for a local (stdio) install (e.g. ["MAILCHIMP_API_KEY"]). Absent when none. A key the manifest leaves optional, such as one only some tools need, is not listed, so check the README before treating a local install as keyless.',
               ),
             installNotice: z
               .string()

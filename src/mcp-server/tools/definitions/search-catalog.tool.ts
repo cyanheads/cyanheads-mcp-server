@@ -58,7 +58,9 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
         (value) => (value === '' ? undefined : value),
         z.enum(['research', 'government', 'public-data', 'utility']).optional(),
       )
-      .describe('Filter by catalog category. Omit to search all categories.'),
+      .describe(
+        'Filter by catalog category. Omit to search all categories. Categories are catalog labels, not publisher types (a federal agency API can be public-data), and a wrong guess silently drops the matching server, so set this only when the category is known.',
+      ),
     limit: z
       .number()
       .int()
