@@ -127,7 +127,8 @@ describe('catalog regression contracts', () => {
     const result = await runToolContract(searchCatalogTool, { query: ' \tfixture\n ' });
     expect(embedQuery).toHaveBeenLastCalledWith('fixture', 2, 'Q: ');
     expect(result.structuredContent).toMatchObject({ effectiveQuery: 'fixture' });
-    expect(text(result)).toContain('Query: fixture');
+    // The trailer renders the echo as a code span, so the trimmed value reads back verbatim.
+    expect(text(result)).toContain('Query: `fixture`\n');
     expect(searchCatalogTool.input.safeParse({ query: ` ${'a'.repeat(499)}` }).success).toBe(true);
     expect(searchCatalogTool.input.safeParse({ query: ` ${'a'.repeat(499)} ` }).success).toBe(
       false,
