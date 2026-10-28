@@ -28,6 +28,7 @@ async function main(): Promise<void> {
       'node_modules',
       'package.json',
       'manifest.json',
+      'skills',
       '.mcpbignore',
       'README.md',
       'LICENSE',

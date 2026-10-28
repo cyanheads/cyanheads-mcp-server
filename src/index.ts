@@ -27,6 +27,7 @@ await createApp({
   tools: [searchCatalogTool, describeEntryTool],
   resources: [],
   prompts: [],
+  skills: 'skills',
   instructions:
     'This server is the discovery front door to the cyanheads MCP fleet. ' +
     'Use cyanheads_search_catalog to find tools or servers by describing what you want to do. ' +

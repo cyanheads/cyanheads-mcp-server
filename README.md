@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.4.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.4.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/cyanheads-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/cyanheads-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/cyanheads-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -38,6 +38,12 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 | `cyanheads_search_catalog` | Search fleet tools and servers by natural-language query. Returns ranked matches with brief summaries and the owning server. |
 | `cyanheads_describe_entry` | Return the description, connection URL, and per-client install snippet for a named tool or server. |
 
+### Skills
+
+| Skill | Description |
+|:---|:---|
+| [`cyanheads-guide`](./skills/cyanheads-guide/SKILL.md) | Find a fleet server for a task and hand over a working install: telling real matches from near misses, the category filter, hosted vs local installs, and env vars the snippets leave out. Served over MCP as `skill://cyanheads-guide/SKILL.md` and loaded by Claude Code and Codex plugin installs. |
+
 ## Capability reference
 
 ### `cyanheads_search_catalog` <sub>tool</sub>
@@ -46,7 +52,7 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 - Results carry cosine-similarity `score` (`[0, 1]`, comparable within one response). Tool searches include a `servers` roll-up with ten entries per page and `serversTotal`; an unloaded catalog returns retryable `catalog_empty`.
 - Page results with `offset` and the tools-scope roll-up independently with `serversOffset` (both default to 0). Reuse the same query, scope, category, and limit with `nextOffset` / `nextServersOffset`; null means exhausted. Each call uses the current catalog, so a refresh between pages can change ordering. Servers scope requires `serversOffset: 0` and omits roll-up fields.
 - `SIMILARITY_FLOOR` (default `0.3`) filters matches before the limit applies.
-- An empty `category` string is treated as omitted; other unknown category values are rejected.
+- An empty `category` string is treated as omitted; other unknown category values are rejected. Categories are catalog labels, not publisher types, and a wrong one drops the matching server without a notice unless nothing else matches.
 
 ---
 
@@ -55,7 +61,7 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 - `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. Exact names win, then unique case-insensitive names; output uses canonical names. `client` optionally selects `claude-code`, `cline`, `codex`, `cursor`, `gemini`, `streamable-http` (generic `mcpServers` JSON), or `curl`.
 - `server` (optional, 1–64 characters) names the owning server: a search result's `name` + `server` describes exactly that row, in either scope. It is required when more than one server owns the tool name; with a server name, it must name the same server.
 - Empty `kind`, `client`, and `server` strings are treated as omitted. Other unknown `kind` or `client` values are rejected.
-- Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets.
+- Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets; they list what the server's manifest marks required, so a key it leaves optional is absent.
 - Descriptions are catalog text; obtain tool schemas from the connected server's `tools/list`.
 - Failures return `not_found`, `ambiguous_kind` (set `kind`), `ambiguous_owner` (set `server`; the error lists the owners), or retryable `catalog_empty`.
 
@@ -80,136 +86,32 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
-
-A public instance is available at `https://cyanheads.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
-
-For Claude Code:
+Connect to the hosted instance, no install:
 
 ```sh
-claude mcp add --transport http cyanheads https://cyanheads.caseyjhand.com/mcp
+claude mcp add --transport http cyanheads-mcp-server https://cyanheads.caseyjhand.com/mcp
 ```
 
-For Cline (`cline_mcp_settings.json`):
+Or run it locally:
+
+```sh
+claude mcp add cyanheads-mcp-server -- npx -y @cyanheads/cyanheads-mcp-server
+```
+
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "cyanheads-mcp-server": {
-      "type": "streamableHttp",
-      "url": "https://cyanheads.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-For Cursor (`mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "cyanheads-mcp-server": {
-      "url": "https://cyanheads.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-Claude Desktop adds remote servers under Settings → Connectors.
-
-### Claude Desktop bundle
-
-Download the [MCPB bundle](https://github.com/cyanheads/cyanheads-mcp-server/releases/latest/download/cyanheads-mcp-server.mcpb) for a local stdio install. It includes ONNX WebAssembly inference, so it does not need platform-specific native libraries. The first start downloads the embedding model; subsequent starts reuse the model cache. npm and Docker installs use native CPU inference.
-
-### Self-Hosted / Local
-
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "cyanheads-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/cyanheads-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
-```
-
-Or with npx (no Bun required):
-
-```json
-{
-  "mcpServers": {
-    "cyanheads-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/cyanheads-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
+      "args": ["-y", "@cyanheads/cyanheads-mcp-server"]
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "cyanheads-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/cyanheads-mcp-server:latest"]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/cyanheads-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd cyanheads-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# edit .env to override any defaults
-```
+The Claude Desktop bundle (the install badge above) runs the embedding model on ONNX WebAssembly, so it needs no platform-specific native libraries; npm and Docker installs use native CPU inference. Either way, the first start downloads the embedding model and later starts reuse the model cache. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -241,6 +143,16 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+
+- **Clone and install:**
+
+  ```sh
+  git clone https://github.com/cyanheads/cyanheads-mcp-server.git
+  cd cyanheads-mcp-server && bun install
+  cp .env.example .env   # every variable has a default; override as needed
+  ```
+
 - **Build and run the production version:**
 
   ```sh
@@ -263,11 +175,10 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 ### Docker
 
 ```sh
-docker build -t cyanheads-mcp-server .
-docker run --rm -p 3010:3010 cyanheads-mcp-server
+docker run --rm -p 3010:3010 ghcr.io/cyanheads/cyanheads-mcp-server:latest
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/cyanheads-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/cyanheads-mcp-server`. To run it over stdio from an MCP client, use `"command": "docker"` with `"args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/cyanheads-mcp-server:latest"]`. To build locally, `docker build -t cyanheads-mcp-server .`; OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
