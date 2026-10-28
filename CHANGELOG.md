@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-10-28
+
+Publishes the cyanheads-guide agent skill over MCP, moves to mcp-ts-core 0.13.18 (which stops the HTTP transport retaining ~71 KiB per request), and sharpens the requiredEnvVars and category field descriptions.
+
 ## [0.4.5](changelog/0.4.x/0.4.5.md) — 2026-10-24
 
 Portable desktop inference and blank-input handling.

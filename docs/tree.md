@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-10-24 18:54:45
+Generated on: 2026-10-28 18:05:18
 
 ```text
 cyanheads-mcp-server/
@@ -28,6 +28,7 @@ cyanheads-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -40,6 +41,8 @@ cyanheads-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -142,6 +145,9 @@ cyanheads-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── cyanheads-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -179,6 +185,8 @@ cyanheads-mcp-server/
 │   │   └── portable-bundle.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   ├── catalog.service.test.ts
 │   │   ├── embeddings-behavior.test.ts
@@ -207,7 +215,9 @@ cyanheads-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
