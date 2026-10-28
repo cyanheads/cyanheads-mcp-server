@@ -1,0 +1,29 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "cyanheads-mcp-server",
+  "version": "0.4.5",
+  "description": "Fleet discovery for the cyanheads MCP ecosystem — semantic search + install snippets.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/cyanheads-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/cyanheads-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "stdio",
+    "streamable-http",
+    "mcp-discovery",
+    "mcp-fleet",
+    "semantic-search",
+    "ai-agents",
+    "llm-tools",
+    "cyanheads",
+    "typescript",
+    "bun"
+  ]
+}
