@@ -7,18 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AGENT_DOC_ENTRY, filterAgentDocEntries } from '../../scripts/clean-mcpb.js';
-
-/**
- * `scripts/lint-packaging.ts` is loaded by URL at run time, not through a
- * static import: its repo-only fallback `import('../src/mcp-server/skills.js')`
- * resolves nowhere in this server, so letting `tsc` follow the module fails the
- * typecheck (mcp-ts-core#797).
- */
-const lintPackagingUrl = new URL('../../scripts/lint-packaging.ts', import.meta.url).href;
-const lintPackaging = (await import(lintPackagingUrl)) as {
-  AGENT_DOC_ENTRY: RegExp;
-  checkBundleEntries: (entries: string[], bundleLabel: string) => string[];
-};
+import * as lintPackaging from '../../scripts/lint-packaging.js';
 
 const RUNTIME_ENTRIES = [
   'node_modules/@modelcontextprotocol/server/dist/ext/skills/index.mjs',
@@ -46,6 +35,8 @@ const AGENT_DOC_ENTRIES = [
   'node_modules/a/node_modules/b/skills/doc.md',
   'node_modules/@s/a/node_modules/@t/b/.agents/notes.md',
   'node_modules/some-pkg/docs/deep/SKILL.md',
+  'node_modules/some-pkg/AGENTS.md',
+  'node_modules/@cyanheads/mcp-ts-core/CLAUDE.md',
 ];
 
 describe('bundle agent-doc matcher', () => {
