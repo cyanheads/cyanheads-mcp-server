@@ -16,18 +16,18 @@ import { CLIENT_IDS } from '@/services/catalog/types.js';
 /**
  * Upper bound on the entry name. Fleet identifiers are bounded in practice —
  * the longest catalog tool name is 42 characters and the longest server name is
- * 32 — so 64 leaves ample headroom for fleet growth while keeping the field
+ * 38 — so 64 leaves ample headroom for fleet growth while keeping the field
  * from being effectively unbounded.
  */
 const NAME_MAX_LENGTH = 64;
 
+/** Form clients submit an untouched optional field as '': read it as unset before the length check. */
+const blankAsUnset = (value: unknown) => (value === '' ? undefined : value);
+
 export const describeEntryTool = tool('cyanheads_describe_entry', {
   title: 'Describe Fleet Tool or Server',
   description:
-    'Return the description and install snippets for a named tool or server. For tools: the ' +
-    'description, owning server, and connection metadata. For either kind: local (stdio, via npx) install ' +
-    'snippets for every published server, plus remote (HTTP) connection snippets when a hosted ' +
-    'endpoint exists — for every supported client, or one client via the client parameter.',
+    'Return the description and install snippets for a named tool or server. For tools: the description, owning server, and connection metadata. For either kind: local (stdio, via npx) install snippets for every published server, plus remote (HTTP) connection snippets when a hosted endpoint exists — for every supported client, or one client via the client parameter.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   auth: ['tool:cyanheads_describe_entry:read'],
 
@@ -37,36 +37,22 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       .min(1)
       .max(NAME_MAX_LENGTH)
       .describe(
-        'Tool name (snake_case, e.g. "earthquake_search_events") or server name ' +
-          '(kebab-case, e.g. "earthquake-mcp-server"). 1-' +
-          `${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server. Use cyanheads_search_catalog to discover valid names.`,
+        `Tool name (snake_case, e.g. "earthquake_search_events") or server name (kebab-case, e.g. "earthquake-mcp-server", or its stem before -mcp-server, e.g. "earthquake"). 1-${NAME_MAX_LENGTH} characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server. Use cyanheads_search_catalog to discover valid names.`,
       ),
-    // Form clients submit an untouched optional field as '': read it as unset before the length check.
     server: z
-      .preprocess(
-        (value) => (value === '' ? undefined : value),
-        z.string().min(1).max(NAME_MAX_LENGTH).optional(),
-      )
+      .preprocess(blankAsUnset, z.string().min(1).max(NAME_MAX_LENGTH).optional())
       .describe(
-        'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with ' +
-          `this name. 1-${NAME_MAX_LENGTH} characters, resolved like a server name. Required when the tool ` +
-          'name has more than one owner; with a server name, it must name the same server.',
+        `Server that owns the tool to describe — the server value cyanheads_search_catalog returned with this name. 1-${NAME_MAX_LENGTH} characters, resolved like a server name, stem included. Required when the tool name has more than one owner; with a server name, it must name the same server.`,
       ),
     kind: z
-      .preprocess(
-        (value) => (value === '' ? undefined : value),
-        z.enum(['tool', 'server']).optional(),
-      )
+      .preprocess(blankAsUnset, z.enum(['tool', 'server']).optional())
       .describe(
-        'Whether name refers to a tool or server. Omit to auto-detect: names containing ' +
-          'underscores are treated as tools; names containing hyphens are treated as servers.',
+        'Whether name refers to a tool or server. Omit to auto-detect: names containing underscores are treated as tools; names containing hyphens are treated as servers; names with neither, such as a server stem ("pubmed"), are looked up as both.',
       ),
     client: z
-      .preprocess((value) => (value === '' ? undefined : value), z.enum(CLIENT_IDS).optional())
+      .preprocess(blankAsUnset, z.enum(CLIENT_IDS).optional())
       .describe(
-        'Return install snippets for this client only (both local and remote transports when ' +
-          'available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a ' +
-          'connectivity probe for hosted servers. Omit to return snippets for all supported clients.',
+        'Return install snippets for this client only (both local and remote transports when available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a connectivity probe for hosted servers. Omit to return snippets for all supported clients.',
       ),
   }),
 
@@ -91,6 +77,12 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .optional()
               .describe(
                 "Environment variable names the owning server's manifest marks required for a local install; a key the manifest leaves optional is not listed.",
+              ),
+            composesWith: z
+              .array(z.string())
+              .optional()
+              .describe(
+                "Servers the owning server's maintainer lists as composing with it — e.g. a geocoder supplying the coordinates its tools take — in published order. Describe any of them with cyanheads_describe_entry. Absent when none are listed.",
               ),
             installNotice: z
               .string()
@@ -142,6 +134,12 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
               .describe(
                 'Env var names the server\'s manifest marks required for a local (stdio) install (e.g. ["MAILCHIMP_API_KEY"]). Absent when none. A key the manifest leaves optional, such as one only some tools need, is not listed, so check the README before treating a local install as keyless.',
               ),
+            composesWith: z
+              .array(z.string())
+              .optional()
+              .describe(
+                "Servers this server's maintainer lists as composing with it — e.g. a geocoder supplying the coordinates its tools take — in published order. Describe any of them with cyanheads_describe_entry. Absent when none are listed.",
+              ),
             installNotice: z
               .string()
               .optional()
@@ -161,8 +159,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
                   .describe('A single tool exposed by this server.'),
               )
               .describe(
-                'Every tool this server exposes, each with its name and a brief description — ' +
-                  'one describe call reveals the full surface without a second lookup.',
+                'Every tool this server exposes, each with its name and a brief description — one describe call reveals the full surface without a second lookup.',
               ),
             installSnippets: z
               .array(
@@ -180,8 +177,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
                   .describe('A single install instruction entry.'),
               )
               .describe(
-                'Install instructions: local (stdio) snippets for every server, plus remote (HTTP) ' +
-                  'snippets when an endpoint exists. Filtered to one client when input.client is set.',
+                'Install instructions: local (stdio) snippets for every server, plus remote (HTTP) snippets when an endpoint exists. Filtered to one client when input.client is set.',
               ),
           })
           .describe(
@@ -197,14 +193,14 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'No tool or server with the given name, under the given server when set, exists in the catalog.',
+      when: 'No entry of the searched kind — the kind set or auto-detected, else both — has the given name in the catalog, under the given server when set. When the other kind has the name, the error names that match and the kind to set.',
       recovery:
         'Use cyanheads_search_catalog to find the correct name and owning server, then call cyanheads_describe_entry again.',
     },
     {
       reason: 'ambiguous_kind',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'Name matches both a tool and a server (collision in catalog).',
+      when: 'With kind omitted, the name matches both a tool and a server, the server by full name or by stem.',
       recovery: 'Set the kind parameter to "tool" or "server" to disambiguate.',
     },
     {
@@ -240,7 +236,11 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
     // Resolve kind: explicit > auto-detect from name format.
     let resolvedKind = input.kind;
     if (!resolvedKind) {
-      // Fleet invariant: tool names use underscores, server names use hyphens.
+      /**
+       * Fleet convention: tool names use underscores, server names use hyphens.
+       * A name with neither — a tool such as "calculate", or a server stem — is
+       * looked up as both.
+       */
       if (input.name.includes('_')) {
         resolvedKind = 'tool';
       } else if (input.name.includes('-')) {
@@ -248,15 +248,16 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       }
     }
 
-    const toolEntries = resolvedKind !== 'server' ? catalog.getTool(input.name, input.server) : [];
-    let serverEntry = resolvedKind !== 'tool' ? catalog.getServer(input.name) : null;
-    if (
-      serverEntry &&
-      input.server !== undefined &&
-      catalog.getServer(input.server) !== serverEntry
-    ) {
-      serverEntry = null;
-    }
+    const findTools = () => catalog.getTool(input.name, input.server);
+    // With server set, a server name must resolve to that same record.
+    const findServer = () => {
+      const record = catalog.getServer(input.name);
+      return record && (input.server === undefined || catalog.getServer(input.server) === record)
+        ? record
+        : null;
+    };
+    const toolEntries = resolvedKind !== 'server' ? findTools() : [];
+    const serverEntry = resolvedKind !== 'tool' ? findServer() : null;
 
     // Ambiguity check (can happen if resolvedKind is undefined and name has neither _ nor -).
     if (toolEntries.length && serverEntry) {
@@ -277,24 +278,39 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
 
     const owner = toolEntry?.serverRecord ?? serverEntry;
     if (!owner) {
-      throw ctx.fail(
-        'not_found',
-        input.server === undefined
-          ? `No tool or server named "${input.name}" in the catalog`
-          : `No tool or server named "${input.name}" under server "${input.server}" in the catalog`,
-        { name: input.name, ...(input.server !== undefined ? { server: input.server } : {}) },
-      );
+      const scope = input.server === undefined ? '' : ` under server "${input.server}"`;
+      const miss = `No ${resolvedKind ?? 'tool or server'} named "${input.name}"${scope} in the catalog`;
+      const data = {
+        name: input.name,
+        ...(input.server !== undefined ? { server: input.server } : {}),
+      };
+      if (resolvedKind) {
+        // Only one kind was searched: name what the same call with the other kind would find.
+        const otherKind = resolvedKind === 'tool' ? 'server' : 'tool';
+        const match = otherKind === 'server' ? findServer()?.name : findTools()[0]?.name;
+        if (match) {
+          throw ctx.fail('not_found', `${miss}; it matches ${otherKind} "${match}".`, {
+            ...data,
+            recovery: {
+              hint: `Set kind to "${otherKind}" and call cyanheads_describe_entry again.`,
+            },
+          });
+        }
+      }
+      throw ctx.fail('not_found', miss, data);
     }
     const allSnippets = buildAllSnippets(owner);
     const snippets = input.client
       ? allSnippets.filter((s) => s.client === input.client)
       : allSnippets;
-    const connection = {
+    // Owning-server fields both result kinds carry.
+    const ownerFields = {
       npm: owner.npm,
       github: owner.github,
       ...(owner.endpoint ? { endpoint: owner.endpoint } : {}),
       auth: owner.auth,
       ...(owner.requiredEnvVars?.length ? { requiredEnvVars: owner.requiredEnvVars } : {}),
+      ...(owner.composesWith?.length ? { composesWith: owner.composesWith } : {}),
       installSnippets: snippets,
       ...(input.client && snippets.length === 0
         ? {
@@ -311,7 +327,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
           name: toolEntry.name,
           description: toolEntry.description,
           server: toolEntry.serverRecord.name,
-          ...connection,
+          ...ownerFields,
         },
       };
     }
@@ -323,7 +339,7 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
         displayName: owner.displayName,
         description: owner.description,
         version: owner.version,
-        ...connection,
+        ...ownerFields,
         toolCount: owner.tools.length,
         tools: owner.tools.map((t) => ({ name: t.name, description: t.description })),
       },
@@ -351,6 +367,11 @@ export const describeEntryTool = tool('cyanheads_describe_entry', {
       .keyValue('Auth', label(result.auth))
       .h2('Description')
       .codeBlock(result.description);
+    if (result.composesWith?.length) {
+      md.h2('Composes with')
+        .list(result.composesWith.map(label))
+        .paragraph('Describe any of these with cyanheads_describe_entry.');
+    }
     if (result.kind === 'server' && result.tools.length) {
       md.h2('Tools');
       for (const entry of result.tools) md.h3(label(entry.name)).codeBlock(entry.description);

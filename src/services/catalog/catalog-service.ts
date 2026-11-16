@@ -17,8 +17,10 @@ import { getSelfCatalogRecord, getSelfCatalogTool, SELF_RECORD_NAME } from './se
 import { setCatalogService } from './service-instance.js';
 import type {
   CatalogCategory,
+  CatalogEntry,
   CatalogRecord,
   CatalogSearchResult,
+  CatalogTool,
   CatalogToolEntry,
   FleetPayload,
   ICatalogService,
@@ -116,8 +118,8 @@ export class CatalogService implements ICatalogService {
     query: string;
     scope: 'tools' | 'servers';
     category?: CatalogCategory;
-    limit?: number;
   }): Promise<CatalogSearchResult[]> {
+    // Captured before the await: a refresh can swap `_index` while the query embeds.
     const index = this._assertInitialized();
     const queryVec = await this._embeddings.embedQuery(
       params.query,
@@ -133,13 +135,7 @@ export class CatalogService implements ICatalogService {
         if (params.category && server.category !== params.category) continue;
         const score = dotRow(queryVec, index.serverVectors, i, index.dims);
         if (score < floor) continue;
-        results.push({
-          name: server.name,
-          server: server.name,
-          brief: server.description,
-          category: server.category,
-          score,
-        });
+        results.push({ ...entryOf(server), score, serverRecord: server });
       }
     } else {
       let toolI = 0;
@@ -152,19 +148,24 @@ export class CatalogService implements ICatalogService {
           const score = dotRow(queryVec, index.toolVectors, toolI, index.dims);
           toolI++;
           if (score < floor) continue;
-          results.push({
-            name: tool.name,
-            server: server.name,
-            brief: tool.description,
-            category: server.category,
-            score,
-          });
+          results.push({ ...entryOf(server, tool), score, serverRecord: server });
         }
       }
     }
 
     results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-    return params.limit != null ? results.slice(0, params.limit) : results;
+    return results;
+  }
+
+  list(params: { scope: 'tools' | 'servers'; category?: CatalogCategory }): CatalogEntry[] {
+    const index = this._assertInitialized();
+    const entries: CatalogEntry[] = [];
+    for (const server of index.payload.servers) {
+      if (params.category && server.category !== params.category) continue;
+      if (params.scope === 'servers') entries.push(entryOf(server));
+      else for (const tool of server.tools) entries.push(entryOf(server, tool));
+    }
+    return entries.sort((a, b) => a.name.localeCompare(b.name) || a.server.localeCompare(b.server));
   }
 
   /**
@@ -179,7 +180,8 @@ export class CatalogService implements ICatalogService {
    *
    * Same-spelling tools under different servers are separate rows, so a name
    * can have several owners. Every candidate is returned in payload order and
-   * the caller decides; `server` narrows to one owner's rows.
+   * the caller decides; `server` narrows to one owner's rows, resolved through
+   * `getServer()`, stems included.
    */
   getTool(name: string, server?: string): CatalogToolEntry[] {
     const index = this._assertInitialized();
@@ -199,13 +201,21 @@ export class CatalogService implements ICatalogService {
     return self ? [self] : [];
   }
 
+  /**
+   * Exact remote name, then unique case-insensitive remote name, then the self
+   * record. Every fleet server is named `<stem>-mcp-server`, so a name with no
+   * candidate at all is retried once as `<name>-mcp-server` through the same
+   * three steps: `pubmed` resolves to `pubmed-mcp-server`, `cyanheads` to the
+   * self record. A full name wins over its stem, and a case-insensitive name
+   * several servers share stays unresolved rather than falling through to the
+   * retry. A prefix several servers share (`noaa`) is not a stem and resolves
+   * to nothing.
+   */
   getServer(name: string): CatalogRecord | null {
     const index = this._assertInitialized();
-    const exact = index.serverByName.get(name);
-    if (exact) return exact;
-    const folded = name.toLowerCase();
-    if (index.serverByFoldedName.has(folded)) return index.serverByFoldedName.get(folded) ?? null;
-    return folded === SELF_RECORD_NAME ? getSelfCatalogRecord() : null;
+    const full = this._lookupServer(index, name);
+    if (full !== undefined) return full;
+    return this._lookupServer(index, `${name}-mcp-server`) ?? null;
   }
 
   listCategories(): CatalogCategory[] {
@@ -392,10 +402,19 @@ export class CatalogService implements ICatalogService {
     }
     return this._index;
   }
+
+  /** One `getServer()` pass: `undefined` when nothing matches, `null` for an ambiguous fold. */
+  private _lookupServer(index: CatalogIndex, name: string): CatalogRecord | null | undefined {
+    const exact = index.serverByName.get(name);
+    if (exact) return exact;
+    const folded = name.toLowerCase();
+    if (index.serverByFoldedName.has(folded)) return index.serverByFoldedName.get(folded) ?? null;
+    return folded === SELF_RECORD_NAME ? getSelfCatalogRecord() : undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Dot product helper
+// Row helpers
 // ---------------------------------------------------------------------------
 
 function dotRow(query: Float32Array, store: Float32Array, rowIdx: number, dims: number): number {
@@ -406,6 +425,16 @@ function dotRow(query: Float32Array, store: Float32Array, rowIdx: number, dims: 
     sum += query[i]! * store[offset + i]!;
   }
   return sum;
+}
+
+/** The catalog row for a server, or for one of its tools when `tool` is given. */
+function entryOf(server: CatalogRecord, tool?: CatalogTool): CatalogEntry {
+  return {
+    name: tool?.name ?? server.name,
+    server: server.name,
+    brief: tool?.description ?? server.description,
+    category: server.category,
+  };
 }
 
 // ---------------------------------------------------------------------------

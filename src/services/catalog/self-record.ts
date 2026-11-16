@@ -52,7 +52,8 @@ function readSelfPackage(): SelfPackageInfo {
  * after a remote-name miss in `getServer()` / `getTool()` — so its embedding is
  * never packed, normalized, or dot-producted. The tradeoff is that
  * `cyanheads_search_catalog` will not surface this server as a semantic match;
- * only name resolution (exact or unique case-insensitive) reaches it.
+ * only name resolution (exact, unique case-insensitive, or the `cyanheads` stem)
+ * reaches it.
  */
 function selfTools(): CatalogTool[] {
   return [searchCatalogTool, describeEntryTool].map((definition) => ({

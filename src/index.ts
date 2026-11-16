@@ -29,13 +29,7 @@ await createApp({
   prompts: [],
   skills: 'skills',
   instructions:
-    'This server is the discovery front door to the cyanheads MCP fleet. ' +
-    'Use cyanheads_search_catalog to find tools or servers by describing what you want to do. ' +
-    "Use cyanheads_describe_entry to get descriptions, connection metadata, and per-client install snippets for any result; pass a result's name and server to describe exactly that row. " +
-    'Tool schemas are available from the connected server through tools/list. ' +
-    'Continue searches with nextOffset and, in tools scope, nextServersOffset; reuse the same query and filters. ' +
-    'Scope "tools" (default) finds individual tools; scope "servers" finds which server owns a workflow. ' +
-    'cyanheads_describe_entry also resolves this server itself, under the name "cyanheads-mcp-server".',
+    'This server is the discovery front door to the cyanheads MCP fleet. Use cyanheads_search_catalog to find tools or servers by describing what you want to do, or omit query to list every tool or server in name order, optionally within one category. Use cyanheads_describe_entry to get descriptions, connection metadata, and per-client install snippets for any result; pass a result\'s name and server to describe exactly that row. Tool schemas are available from the connected server through tools/list. One call returns up to 1000 results (limit, default 5). Continue with nextOffset and, in tools-scope searches, nextServersOffset; reuse the same query and filters. Scope "tools" (default) finds individual tools; scope "servers" finds which server owns a workflow. cyanheads_describe_entry also resolves this server itself, under the name "cyanheads-mcp-server".',
 
   async setup() {
     const config = getServerConfig();

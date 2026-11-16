@@ -203,6 +203,44 @@ describe('RemoteJsonCatalogProvider.load()', () => {
         message: expect.stringContaining('validation'),
       });
     });
+
+    it('keeps a composesWith list in published order, entries naming no catalog server included', async () => {
+      const composesWith = [
+        'openstreetmap-mcp-server',
+        'not-in-catalog-mcp-server',
+        'a-mcp-server',
+      ];
+      mockFetchOk({
+        ...MINIMAL_PAYLOAD,
+        servers: [{ ...MINIMAL_PAYLOAD.servers[0], composesWith }],
+      });
+      const payload = await new RemoteJsonCatalogProvider(TEST_CONFIG).load();
+      expect(payload.servers[0]!.composesWith).toEqual(composesWith);
+    });
+
+    it('accepts a record without composesWith', async () => {
+      mockFetchOk(MINIMAL_PAYLOAD);
+      const payload = await new RemoteJsonCatalogProvider(TEST_CONFIG).load();
+      expect(payload.servers[0]).not.toHaveProperty('composesWith');
+    });
+
+    it.each([
+      'openstreetmap-mcp-server',
+      { name: 'openstreetmap-mcp-server' },
+      [1],
+      ['openstreetmap-mcp-server', null],
+    ])('rejects composesWith %j as a payload validation failure', async (composesWith) => {
+      mockFetchOk({
+        ...MINIMAL_PAYLOAD,
+        servers: [{ ...MINIMAL_PAYLOAD.servers[0], composesWith }],
+      });
+      await expect(new RemoteJsonCatalogProvider(TEST_CONFIG).load()).rejects.toMatchObject({
+        code: JsonRpcErrorCode.InternalError,
+        message: expect.stringContaining(
+          'Catalog payload failed validation at servers.0.composesWith',
+        ),
+      });
+    });
   });
 
   describe('network errors', () => {

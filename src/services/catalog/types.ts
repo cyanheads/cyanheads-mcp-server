@@ -74,9 +74,16 @@ export interface CatalogRecord {
   auth: string;
   /** Thematic grouping for filter facets. */
   category: CatalogCategory;
+  /**
+   * Maintainer-written names of servers that compose with this one (e.g. a
+   * geocoder supplying the coordinates its tools take), in published order.
+   * Entries pass through as published, so one may name no catalog server.
+   * Optional — absent when the maintainer lists none.
+   */
+  composesWith?: string[];
   /** One-line description of what this server does. */
   description: string;
-  /** Human label (e.g. "arXiv"). */
+  /** Display label. The producer sets it to the server name (e.g. "arxiv-mcp-server"). */
   displayName: string;
   /**
    * Matryoshka-truncated embedding vector of `${displayName}\n${description}`,
@@ -126,23 +133,39 @@ export interface FleetPayload {
   version: '2';
 }
 
-/** Result row returned from catalog searches. */
-export interface CatalogSearchResult {
-  /** Brief description for display. */
+/** One catalog row: a tool, or a server in servers scope. Listing returns these unranked. */
+export interface CatalogEntry {
+  /** The tool's or server's full catalog description. */
   brief: string;
   /** Catalog category for the owning server. */
   category: CatalogCategory;
   /** Tool or server name, depending on scope. */
   name: string;
-  /** Cosine similarity in [0, 1]. Higher is better. */
-  score: number;
   /** Server that owns this result. */
   server: string;
 }
 
+/** Result row returned from catalog searches. */
+export interface CatalogSearchResult extends CatalogEntry {
+  /** Cosine similarity in [0, 1]. Higher is better. */
+  score: number;
+  /**
+   * The owning server's record from the index snapshot that scored this row.
+   * A background refresh can swap the index while the query is embedded, so
+   * a later `getServer()` may answer from a catalog that no longer matches.
+   */
+  serverRecord: CatalogRecord;
+}
+
 /** Service interface. */
 export interface ICatalogService {
-  /** Exact remote name, then unique case-insensitive remote name, then self fallback. Ambiguous folds return null. */
+  /**
+   * Exact remote name, then unique case-insensitive remote name, then self
+   * fallback. A name with none of those is retried once as
+   * `<name>-mcp-server` through the same steps, so a stem ("pubmed") resolves
+   * to its server. An ambiguous case-insensitive name returns null and is not
+   * retried.
+   */
   getServer(name: string): CatalogRecord | null;
 
   /**
@@ -161,20 +184,24 @@ export interface ICatalogService {
    */
   initialize(): Promise<void>;
 
+  /**
+   * Every entry in the scope that passes the category filter, unranked: no
+   * embedding and no similarity floor. Ordered by name, then owning server.
+   */
+  list(params: { scope: 'tools' | 'servers'; category?: CatalogCategory }): CatalogEntry[];
+
   /** List all category strings present in the catalog. */
   listCategories(): CatalogCategory[];
 
   /**
    * Semantic search. Embeds the query, computes cosine similarity against
    * every catalog entry within the requested scope, filters by category and
-   * by the configured similarity floor, sorts descending, and returns the
-   * top `limit` (or every match when `limit` is omitted).
+   * by the configured similarity floor, and returns every match, best first.
    */
   search(params: {
     query: string;
     scope: 'tools' | 'servers';
     category?: CatalogCategory;
-    limit?: number;
   }): Promise<CatalogSearchResult[]>;
 
   /** Stop the background refresh timer. */

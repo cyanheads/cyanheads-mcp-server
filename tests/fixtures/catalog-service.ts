@@ -11,7 +11,8 @@ import type {
 
 const TEST_SERVER: CatalogRecord = {
   name: 'example-mcp-server',
-  displayName: 'Example',
+  // The producer sets displayName to the server name.
+  displayName: 'example-mcp-server',
   description: 'Example catalog server for contract tests.',
   category: 'utility',
   endpoint: 'https://example.test/mcp',
@@ -19,6 +20,8 @@ const TEST_SERVER: CatalogRecord = {
   github: 'https://github.com/cyanheads/example-mcp-server',
   version: '1.0.0',
   auth: 'none',
+  // Entries pass through as published, so this one names no server the fake holds.
+  composesWith: ['openstreetmap-mcp-server'],
   embedding: [1, 0],
   tools: [
     {
@@ -35,6 +38,7 @@ const TEST_RESULT: CatalogSearchResult = {
   brief: TEST_SERVER.tools[0]!.description,
   category: TEST_SERVER.category,
   score: 1,
+  serverRecord: TEST_SERVER,
 };
 
 /** Create a deterministic catalog service for tool contract, smoke, and fuzz tests. */
@@ -46,6 +50,13 @@ export function createCatalogServiceFake(): ICatalogService {
         ? [{ ...TEST_SERVER.tools[0]!, serverRecord: TEST_SERVER }]
         : [],
     async initialize() {},
+    list: ({ scope, category }) => {
+      if (category !== undefined && category !== TEST_SERVER.category) return [];
+      const { name, server, brief } = TEST_RESULT;
+      return scope === 'servers'
+        ? [{ name: server, server, brief: TEST_SERVER.description, category: TEST_SERVER.category }]
+        : [{ name, server, brief, category: TEST_SERVER.category }];
+    },
     listCategories: () => [TEST_SERVER.category],
     async search({ query }) {
       return query.trim() ? [TEST_RESULT] : [];

@@ -1,6 +1,6 @@
 # cyanheads-mcp-server - Directory Structure
 
-Generated on: 2026-10-28 18:05:18
+Generated on: 2026-11-16 09:32:41
 
 ```text
 cyanheads-mcp-server/
@@ -174,11 +174,13 @@ cyanheads-mcp-server/
 │   ├── config/
 │   │   └── server-config.test.ts
 │   ├── fixtures/
-│   │   └── catalog-service.ts
+│   │   ├── catalog-service.ts
+│   │   └── fake-transformers.mjs
 │   ├── fuzz/
 │   │   └── tools.fuzz.test.ts
 │   ├── integration/
 │   │   ├── catalog-regressions.int.test.ts
+│   │   ├── entry-point.int.test.ts
 │   │   ├── error-envelope.int.test.ts
 │   │   └── tool-contracts.int.test.ts
 │   ├── packaging/

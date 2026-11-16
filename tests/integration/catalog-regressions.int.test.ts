@@ -198,87 +198,183 @@ describe('catalog regression contracts', () => {
     }
   });
 
-  it('serves an oversized limit up to the per-call cap and discloses the cut on both surfaces', async () => {
-    await service.initialize();
+  describe('the 1000-row per-call cap', () => {
+    /**
+     * Two rows past the cap under distinct zero-padded names, so name order is
+     * payload order: every row ties at score 1, and ties break by name.
+     */
+    function bulkFleet(): FleetPayload {
+      const servers = Array.from({ length: 6 }, (_, s) => ({
+        ...server(s),
+        name: `bulk-${s}`,
+        tools: Array.from({ length: 167 }, (_, t) => ({
+          name: `bulk_${s}_${String(t).padStart(3, '0')}`,
+          description: `Bulk ${s} ${t}`,
+          embedding: [1, 0],
+        })),
+      }));
+      return { ...fleet(), servers };
+    }
+
     // `limit` as a client sends it: a numeric string is repaired by the framework.
-    const call = (args: { limit: number | string; offset?: number; scope?: 'servers' }) =>
-      runToolContract(searchCatalogTool, {
-        query: 'fixture',
-        ...args,
-      } as z.input<typeof searchCatalogTool.input>);
+    type Args = { query?: string; limit: number | string; offset?: number; scope?: 'servers' };
+    const call = ({ query = 'fixture', ...args }: Args) =>
+      runToolContract(searchCatalogTool, { query, ...args } as z.input<
+        typeof searchCatalogTool.input
+      >);
+    const list = (args: Omit<Args, 'query'>) =>
+      runToolContract(searchCatalogTool, args as z.input<typeof searchCatalogTool.input>);
+    const names = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      searchCatalogTool.output.parse(result.structuredContent).results.map((r) => r.name);
     const truncationKeys = ['truncated', 'shown', 'cap', 'notice'];
+    const quiet = (result: Awaited<ReturnType<typeof runToolContract>>) => {
+      expect(result.isError).not.toBe(true);
+      for (const key of truncationKeys) expect(result.structuredContent).not.toHaveProperty(key);
+      expect(text(result)).not.toContain('per-call cap');
+    };
+    let all: string[];
 
-    const capped = await call({ limit: 20 });
-    const oversized = await call({ limit: 100 });
-    for (const key of truncationKeys) expect(capped.structuredContent).not.toHaveProperty(key);
-    const notice =
-      'limit 100 exceeds the per-call cap of 20; 4 more results follow. Continue with offset 20.';
-    expect(oversized.structuredContent).toEqual({
-      ...capped.structuredContent!,
-      truncated: true,
-      shown: 20,
-      cap: 20,
-      notice,
-    });
-    expect(oversized.structuredContent).toMatchObject({ totalCount: 24, nextOffset: 20 });
-    const lines = text(oversized).split('\n');
-    for (const line of [`> ${notice}`, '**truncated:** true', '**shown:** 20', '**cap:** 20'])
-      expect(lines).toContain(line);
-    expect(text(capped)).not.toContain('per-call cap');
-
-    // A mid-list page names the singular remainder and the offset after the served page.
-    expect((await call({ limit: 21, offset: 3 })).structuredContent).toMatchObject({
-      nextOffset: 23,
-      shown: 20,
-      notice:
-        'limit 21 exceeds the per-call cap of 20; 1 more result follows. Continue with offset 23.',
+    beforeEach(async () => {
+      payload = bulkFleet();
+      await service.initialize();
+      all = payload.servers.flatMap((s) => s.tools.map((t) => t.name));
+      expect(all).toHaveLength(1002);
     });
 
-    // Pages that hold every remaining match, the zero-match page, and a past-end page carry no truncation fields.
-    const quiet = [
-      await call({ limit: 100, offset: 10 }),
-      await call({ limit: 1000, scope: 'servers' }),
-      await call({ limit: 100, offset: 99 }),
-      await runToolContract(searchCatalogTool, { query: 'no match', limit: 100 }),
-    ];
-    for (const page of quiet) {
-      expect(page.isError).not.toBe(true);
-      expect(page.structuredContent).toMatchObject({ nextOffset: null });
-      for (const key of ['truncated', 'shown', 'cap'])
-        expect(page.structuredContent).not.toHaveProperty(key);
-      expect(text(page)).not.toContain('per-call cap');
-    }
-    expect(quiet[0]!.structuredContent).toMatchObject({ offset: 10, totalCount: 24 });
-    expect(searchCatalogTool.output.parse(quiet[0]!.structuredContent).results).toHaveLength(14);
-    expect(searchCatalogTool.output.parse(quiet[1]!.structuredContent).results).toHaveLength(12);
-    // Last pages carry no notice; the past-end and zero-match notices survive an oversized limit intact.
-    for (const page of quiet.slice(0, 2))
-      expect(page.structuredContent).not.toHaveProperty('notice');
-    const pastEnd = 'No results on this page. Use offset 0 to return to the first result page.';
-    const zero = 'No tools matched. Try broadening the query or switching to scope "servers".';
-    expect(quiet[2]!.structuredContent).toMatchObject({ notice: pastEnd });
-    expect(text(quiet[2]!).split('\n')).toContain(`> ${pastEnd}`);
-    expect(quiet[3]!.structuredContent).toMatchObject({ notice: zero });
-    expect(text(quiet[3]!).split('\n')).toContain(`> ${zero}`);
+    it('serves a limit at or under the cap whole, with nothing disclosed', async () => {
+      const hundred = await call({ limit: 100 });
+      quiet(hundred);
+      expect(hundred.structuredContent).toMatchObject({ totalCount: 1002, nextOffset: 100 });
+      expect(names(hundred)).toEqual(all.slice(0, 100));
+      const atCap = await call({ limit: 1000 });
+      quiet(atCap);
+      expect(atCap.structuredContent).toMatchObject({ nextOffset: 1000, serversTotal: 6 });
+      expect(names(atCap)).toEqual(all.slice(0, 1000));
+    });
 
-    // Walking with the same oversized limit returns every match exactly once.
-    const walked: string[] = [];
-    let offset: number | null = 0;
-    const pages: Record<string, unknown>[] = [];
-    while (offset !== null) {
-      const page = await call({ limit: '100', offset });
-      expect(page.isError).not.toBe(true);
-      const content = page.structuredContent as Record<string, unknown>;
-      pages.push(content);
-      walked.push(...searchCatalogTool.output.parse(content).results.map((r) => r.name));
-      offset = content.nextOffset as number | null;
-    }
-    expect(walked).toEqual(payload.servers.flatMap((s) => s.tools.map((t) => t.name)));
-    expect(pages.map((p) => [p.offset, p.nextOffset, p.truncated])).toEqual([
-      [0, 20, true],
-      [20, null, undefined],
-    ]);
-    for (const key of truncationKeys) expect(pages.at(-1)).not.toHaveProperty(key);
+    it.each([1001, 1e6, 1e20, '1500'])(
+      'serves limit %j as 1000 rows and names the remainder on both surfaces',
+      async (limit) => {
+        const atCap = await call({ limit: 1000 });
+        const clamped = await call({ limit });
+        const notice = `limit ${Number(limit)} exceeds the per-call cap of 1000; 2 more results follow. Continue with offset 1000.`;
+        expect(clamped.structuredContent).toEqual({
+          ...atCap.structuredContent!,
+          truncated: true,
+          shown: 1000,
+          cap: 1000,
+          notice,
+        });
+        const lines = text(clamped).split('\n');
+        for (const line of [
+          `> ${notice}`,
+          '**truncated:** true',
+          '**shown:** 1000',
+          '**cap:** 1000',
+        ])
+          expect(lines).toContain(line);
+        expect(lines).toContain('### `bulk_5_164`');
+        expect(lines).not.toContain('### `bulk_5_165`');
+      },
+    );
+
+    it('names the singular remainder mid-list and serves the exact remainder after it', async () => {
+      const mid = await call({ limit: 1001, offset: 1 });
+      expect(mid.structuredContent).toMatchObject({
+        offset: 1,
+        nextOffset: 1001,
+        shown: 1000,
+        cap: 1000,
+        notice:
+          'limit 1001 exceeds the per-call cap of 1000; 1 more result follows. Continue with offset 1001.',
+      });
+      expect(names(mid)).toEqual(all.slice(1, 1001));
+
+      const rest = await call({ limit: 1001, offset: 1000 });
+      quiet(rest);
+      expect(rest.structuredContent).toMatchObject({ offset: 1000, nextOffset: null });
+      expect(names(rest)).toEqual(['bulk_5_165', 'bulk_5_166']);
+      const lines = text(rest).split('\n');
+      expect(lines).toContain('### `bulk_5_165`');
+      expect(lines).toContain('### `bulk_5_166`');
+    });
+
+    it('keeps the past-end and zero-match notices whole when a clamp lands on them', async () => {
+      const pastEnd = 'No results on this page. Use offset 0 to return to the first result page.';
+      const zero = 'No tools matched. Try broadening the query or switching to scope "servers".';
+      for (const [result, notice] of [
+        [await call({ limit: 5000, offset: 2000 }), pastEnd],
+        [await call({ query: 'no match', limit: 5000 }), zero],
+      ] as const) {
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({ results: [], nextOffset: null, notice });
+        for (const key of ['truncated', 'shown', 'cap'])
+          expect(result.structuredContent).not.toHaveProperty(key);
+        expect(text(result).split('\n')).toContain(`> ${notice}`);
+        expect(text(result)).not.toContain('per-call cap');
+      }
+    });
+
+    it('returns every server at limit 5000 in servers scope with no truncation fields', async () => {
+      const servers = await call({ limit: 5000, scope: 'servers' });
+      quiet(servers);
+      expect(servers.structuredContent).toMatchObject({ totalCount: 6, nextOffset: null });
+      expect(names(servers)).toEqual(payload.servers.map((s) => s.name));
+    });
+
+    it.each([
+      {
+        limit: '1001',
+        pages: [
+          [0, 1000, true],
+          [1000, null, undefined],
+        ],
+      },
+      {
+        limit: 300,
+        pages: [
+          [0, 300, undefined],
+          [300, 600, undefined],
+          [600, 900, undefined],
+          [900, null, undefined],
+        ],
+      },
+    ] as const)('walks every match exactly once at limit $limit', async ({ limit, pages }) => {
+      for (const run of [call, list]) {
+        const walked: string[] = [];
+        const seen: unknown[] = [];
+        let offset: number | null = 0;
+        for (let page = 0; page < pages.length && offset !== null; page++) {
+          const result = await run({ limit, offset });
+          expect(result.isError).not.toBe(true);
+          const content = result.structuredContent as Record<string, unknown>;
+          seen.push([content.offset, content.nextOffset, content.truncated]);
+          walked.push(...names(result));
+          offset = content.nextOffset as number | null;
+        }
+        expect(seen).toEqual(pages);
+        expect(walked).toEqual(all);
+      }
+    });
+
+    it('pages a listing under the same cap, by name', async () => {
+      // Drop initialize()'s warm-up embed: a listing embeds nothing at all.
+      embedQuery.mockClear();
+      const first = await list({ limit: 5000 });
+      expect(first.structuredContent).toMatchObject({
+        totalCount: 1002,
+        nextOffset: 1000,
+        truncated: true,
+        shown: 1000,
+        cap: 1000,
+        notice:
+          'limit 5000 exceeds the per-call cap of 1000; 2 more results follow. Continue with offset 1000.',
+      });
+      expect(first.structuredContent).not.toHaveProperty('effectiveQuery');
+      expect(first.structuredContent).not.toHaveProperty('servers');
+      expect(names(first)).toEqual(all.slice(0, 1000));
+      expect(embedQuery).not.toHaveBeenCalled();
+    });
   });
 
   it.each([
@@ -350,6 +446,7 @@ describe('catalog regression contracts', () => {
         brief: later.description,
         category: 'utility',
         score: 1,
+        serverRecord: service.getServer(later.name),
       },
     ]);
   });
@@ -395,7 +492,7 @@ describe('catalog regression contracts', () => {
     expect(service.stats()).toMatchObject({ serverCount: 1, toolCount: 2 });
   });
 
-  it.each(['description', 'embedding', 'metadata', 'server'] as const)(
+  it.each(['description', 'embedding', 'metadata', 'server', 'composesWith'] as const)(
     'rejects conflicting %s duplicates and preserves the previous index',
     async (conflict) => {
       await service.initialize();
@@ -403,7 +500,9 @@ describe('catalog regression contracts', () => {
       const rows = await service.search({ query: 'fixture', scope: 'tools' });
       const original = payload.servers[0]!;
       payload.generatedAt = 'bad';
-      if (conflict === 'metadata' || conflict === 'server') {
+      if (conflict === 'composesWith') {
+        payload.servers.push({ ...original, composesWith: ['fixture-01-mcp-server'] });
+      } else if (conflict === 'metadata' || conflict === 'server') {
         payload.servers.push({
           ...original,
           ...(conflict === 'metadata' ? { auth: 'different' } : { description: 'different' }),
@@ -427,6 +526,16 @@ describe('catalog regression contracts', () => {
       expect(service.stats().serverCount).toBe(1);
     },
   );
+
+  it('collapses identical duplicates that carry composesWith and keeps the list', async () => {
+    const composesWith = ['fixture-01', 'not-in-catalog-mcp-server'];
+    payload.servers[0] = { ...payload.servers[0]!, composesWith };
+    payload.servers.push({ ...payload.servers[0]!, composesWith: [...composesWith] });
+    await service.initialize();
+    expect(service.stats()).toMatchObject({ serverCount: 12, toolCount: 24 });
+    const described = await runToolContract(describeEntryTool, { name: 'fixture-00' });
+    expect(described.structuredContent).toMatchObject({ result: { composesWith } });
+  });
 
   it('keeps same-spelling tools owned by unrelated servers in their own inventories', async () => {
     payload.servers[1]!.tools[0] = { ...payload.servers[0]!.tools[0]! };
@@ -495,16 +604,20 @@ describe('catalog regression contracts', () => {
     payload.servers = [upper];
     await service.initialize();
     expect(service.getServer(lower.name)?.name).toBe(upper.name);
+    expect(service.getServer('cyanheads')?.name).toBe(upper.name);
     expect(service.getTool('cyanheads_search_catalog').map((t) => t.description)).toEqual([
       'remote upper',
     ]);
     payload = { ...payload, generatedAt: 'collision', servers: [upper, lower] };
     await vi.advanceTimersByTimeAsync(1100);
     expect(service.getServer(lower.name)?.name).toBe(lower.name);
+    expect(service.getServer('cyanheads')?.name).toBe(lower.name);
     expect(service.getTool('cyanheads_search_catalog').map((t) => t.description)).toEqual([
       'remote lower',
     ]);
+    // The ambiguous fold stays unresolved, full name and stem alike; neither reaches the self record.
     expect(service.getServer('Cyanheads-MCP-Server')).toBeNull();
+    expect(service.getServer('Cyanheads')).toBeNull();
     expect(service.getTool('Cyanheads_Search_Catalog')).toEqual([]);
     const miss = await runToolContract(describeEntryTool, { name: 'Cyanheads_Search_Catalog' });
     expect(miss.structuredContent).toMatchObject({
@@ -520,6 +633,7 @@ describe('catalog regression contracts', () => {
     expect(service.getTool('CYANHEADS_SEARCH_CATALOG').map((t) => t.name)).toEqual([
       'cyanheads_search_catalog',
     ]);
+    expect(service.getServer('Cyanheads')?.endpoint).toBe('https://cyanheads.caseyjhand.com/mcp');
   });
 
   it.each(['later', 'earlier'] as const)(
@@ -580,6 +694,7 @@ describe('catalog regression contracts', () => {
   it.each([undefined, 'cline', 'codex', 'curl'] as const)(
     'provides matching tool/server connection handoff for client %s',
     async (client) => {
+      payload.servers[1]!.composesWith = ['fixture-00', 'not-in-catalog-mcp-server'];
       await service.initialize();
       for (const [tool, owner] of [
         ['fixture_00_0', 'fixture-00'],
@@ -603,12 +718,16 @@ describe('catalog regression contracts', () => {
           'endpoint',
           'auth',
           'requiredEnvVars',
+          'composesWith',
           'installSnippets',
           'installNotice',
         ] as const) {
           expect(toolResult).toHaveProperty('npm');
           expect(toolResult[key]).toEqual(serverResult[key]);
         }
+        expect(toolResult.composesWith).toEqual(
+          owner === 'fixture-01' ? ['fixture-00', 'not-in-catalog-mcp-server'] : undefined,
+        );
         if (client === 'curl' && owner === 'fixture-00') {
           expect(toolResult.installSnippets).toEqual([]);
           expect(toolResult.installNotice).toMatch(/curl.*HTTP.*codex/);
@@ -633,6 +752,7 @@ describe('catalog regression contracts', () => {
         endpoint: literal,
         version: literal,
         requiredEnvVars: [literal],
+        composesWith: [literal, 'fixture-`companion'],
         tools: [{ name: 'fixture_`tool', description: literal, embedding: [1, 0] }],
       },
     ];
@@ -642,6 +762,7 @@ describe('catalog regression contracts', () => {
       expect(described.isError).not.toBe(true);
       const output = describeEntryTool.output.parse(described.structuredContent).result;
       expect(output.description).toBe(literal);
+      expect(output.composesWith).toEqual([literal, 'fixture-`companion']);
       const rendered = html(text(described));
       expect(rendered).toContain(escaped(literal));
       expect(rendered).not.toMatch(
@@ -651,6 +772,16 @@ describe('catalog regression contracts', () => {
       for (const snippet of output.installSnippets)
         expect(rendered).toContain(escaped(snippet.payload));
       expect(rendered).toContain('<code>fixture_`tool</code>');
+      expect(rendered).toContain('<h2>Composes with</h2>');
+      expect(rendered).toContain('<code>fixture-`companion</code>');
+      // The composesWith entry adds exactly one intact copy of the literal to the parsed text.
+      const copies = (result: typeof output) =>
+        html(
+          describeEntryTool.format!({ result })
+            .map((b) => ('text' in b ? b.text : ''))
+            .join('\n'),
+        ).split(escaped(literal)).length;
+      expect(copies(output) - copies({ ...output, composesWith: [] })).toBe(1);
       const modified = {
         result: {
           ...output,

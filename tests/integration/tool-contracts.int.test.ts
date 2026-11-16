@@ -19,6 +19,8 @@ toolContractSuite(searchCatalogTool, {
       name: 'formats an exhausted result and roll-up page',
       input: { query: 'example', offset: 20, serversOffset: 10 },
     },
+    { name: 'validates, invokes, and formats a tool listing', input: {} },
+    { name: 'validates, invokes, and formats a server listing', input: { scope: 'servers' } },
   ],
 });
 

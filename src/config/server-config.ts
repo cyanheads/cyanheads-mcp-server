@@ -67,6 +67,18 @@ const ServerConfigSchema = z.object({
     .max(1)
     .default(0.3)
     .describe('Minimum cosine similarity in [0, 1] for a match to appear in search results.'),
+
+  /**
+   * On, a count input above its per-call cap is served at the cap with a
+   * disclosure and `tools/list` advertises no `maximum`. Off, the cap is an
+   * advertised `maximum` and a larger value is rejected.
+   */
+  clampLimits: z
+    .stringbool()
+    .default(true)
+    .describe(
+      'Serve a limit above the per-call cap at the cap (true) instead of rejecting it (false).',
+    ),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -80,8 +92,20 @@ export function getServerConfig(): ServerConfig {
     catalogRefreshSeconds: 'CATALOG_REFRESH_SECONDS',
     embeddingModelId: 'EMBEDDING_MODEL_ID',
     similarityFloor: 'SIMILARITY_FLOOR',
+    clampLimits: 'CATALOG_CLAMP_LIMITS',
   });
   return _config;
+}
+
+/**
+ * `clampLimits` from the config `getServerConfig()` last parsed, `true` until
+ * one has been parsed. Input schemas read it while `tool()` emits them at
+ * import, and under Node the framework loads `.env` later, inside
+ * `createApp()`; parsing here would cache a config built without `.env`. So
+ * this never parses: `setup()` does, before any `tools/list` or call is served.
+ */
+export function clampLimitsEnabled(): boolean {
+  return _config?.clampLimits ?? true;
 }
 
 /** Reset cached config (test-only). */

@@ -23,15 +23,17 @@ The catalog lists hosted servers and local-only (stdio) servers, not every cyanh
 | Server name | `openfda-mcp-server` | `results[].server`; `servers[].name` (roll-up); `results[].name` (servers scope) |
 | npm package | `@cyanheads/openfda-mcp-server` | `npm` from `cyanheads_describe_entry` |
 
-A server resolves only by its full package basename (case-insensitive). A display or short name (`arXiv`, `pubmed`) returns `not_found`, so search for the task and take the name from a result.
+A server resolves by its full package basename (case-insensitive) or by its stem, the name before `-mcp-server`: `pubmed` resolves to `pubmed-mcp-server`. A full name wins over its stem. A prefix several servers share (`noaa`, for `noaa-climate-mcp-server` and its siblings) is not a stem and resolves to nothing, so search for the task and take the name from a result. With `kind` omitted, a bare stem is looked up as both a tool and a server, and `ambiguous_kind` means set `kind`.
 
 Copy `npm` exactly as returned, or use the snippet that embeds it. Packages are not all `@cyanheads/`-scoped (`obsidian-mcp-server` publishes unscoped), so a package name built from the server name can point at nothing.
 
 ## Gates
 
 - **A result is not coverage.** Search returns everything above a low similarity floor, so an off-domain request still comes back with tools: a flight-booking query returns airport reference lookups, and a Slack query returns push-notification tools. Read each match's brief, or describe it, and claim coverage only when the description does the task. When nothing does, tell the user the fleet has no server for it instead of offering the nearest neighbor.
+- **To browse, omit `query`.** The call lists every tool or server in the scope in name order, with no `score`, and `category` narrows it. One call returns at most 1000 results; a larger `limit` is served at 1000, and when more matches follow, a `notice` names the `offset` to continue from.
 - **Leave `category` unset unless the user names one.** Categories are the catalog's own labels and don't follow who publishes the data: the openFDA, Census, and NWS servers are `public-data`, while SEC EDGAR is `government`. A wrong guess drops the right server, and the response returns the best of what is left, with no notice unless nothing is left.
 - **Prefer the hosted install when `endpoint` is present.** The `http` snippets connect to a running server: nothing to install and no `env` block to fill. Hand over a `stdio` snippet when the server has no `endpoint` or the user asks for a local install.
+- **`composesWith` names servers that pair with the one described.** The maintainer's list can include a name the catalog doesn't carry; describing it then returns `not_found`, so report that the catalog lists no such server.
 - **Supply the env vars a CLI snippet leaves out.** `requiredEnvVars` names the variables the server's manifest marks required; without them a local install fails to start or its tools fail. JSON snippets scaffold them as empty `env` keys for the user to fill, but the `claude-code`, `codex`, and `gemini` CLI snippets omit them. Tell the user to set those variables, or add them to the command.
 - **An absent `requiredEnvVars` does not mean keyless.** Manifests don't mark every key required: `census-mcp-server` lists none, yet its data-query tools need `CENSUS_API_KEY`. Before handing over a local install, check the README at `github`, or use the hosted endpoint.
 

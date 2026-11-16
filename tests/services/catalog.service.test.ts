@@ -255,11 +255,7 @@ describe('CatalogService', () => {
       mockFetchOk(MINIMAL_PAYLOAD);
       await service.initialize();
 
-      const results = await service.search({
-        query: 'earthquake activity',
-        scope: 'tools',
-        limit: 5,
-      });
+      const results = await service.search({ query: 'earthquake activity', scope: 'tools' });
 
       expect(results.length).toBeGreaterThan(0);
       // E0-aligned tool (earthquake_search) should rank first.
@@ -275,11 +271,7 @@ describe('CatalogService', () => {
       mockFetchOk(MINIMAL_PAYLOAD);
       await service.initialize();
 
-      const results = await service.search({
-        query: 'arxiv research',
-        scope: 'servers',
-        limit: 5,
-      });
+      const results = await service.search({ query: 'arxiv research', scope: 'servers' });
 
       expect(results[0]!.name).toBe('arxiv-mcp-server');
       expect(results[0]!.server).toBe('arxiv-mcp-server');
@@ -292,11 +284,7 @@ describe('CatalogService', () => {
       mockFetchOk(MINIMAL_PAYLOAD);
       await service.initialize();
 
-      const results = await service.search({
-        query: 'unrelated',
-        scope: 'tools',
-        limit: 5,
-      });
+      const results = await service.search({ query: 'unrelated', scope: 'tools' });
 
       expect(results).toHaveLength(0);
     });
@@ -311,7 +299,6 @@ describe('CatalogService', () => {
         query: 'generic',
         scope: 'servers',
         category: 'research',
-        limit: 5,
       });
 
       for (const r of results) {
@@ -319,18 +306,129 @@ describe('CatalogService', () => {
       }
     });
 
-    it('respects the limit parameter', async () => {
+    it('returns every match above the floor, each carrying its owning server record', async () => {
       const embeddings = makeMockEmbeddings({ broad: [0.5, 0.5, 0.5, 0.5] });
       service = new CatalogService(TEST_CONFIG, embeddings);
       mockFetchOk(MINIMAL_PAYLOAD);
       await service.initialize();
 
-      const results = await service.search({
-        query: 'broad',
-        scope: 'tools',
-        limit: 1,
+      const tools = await service.search({ query: 'broad', scope: 'tools' });
+      // All three tools score 0.5, above the 0.3 floor; equal scores break by name.
+      expect(tools.map((r) => [r.name, r.server, r.score])).toEqual([
+        ['arxiv_search', 'arxiv-mcp-server', 0.5],
+        ['earthquake_get_feed', 'earthquake-mcp-server', 0.5],
+        ['earthquake_search', 'earthquake-mcp-server', 0.5],
+      ]);
+      for (const row of tools) expect(row.serverRecord).toBe(service.getServer(row.server));
+
+      const servers = await service.search({ query: 'broad', scope: 'servers' });
+      expect(servers.map((r) => r.name)).toEqual(['arxiv-mcp-server', 'earthquake-mcp-server']);
+      for (const row of servers) expect(row.serverRecord).toBe(service.getServer(row.name));
+    });
+  });
+
+  describe('list() — unranked listing', () => {
+    const embedQuery = vi.fn(makeMockEmbeddings({}).embedQuery);
+    const [quake, arxiv] = MINIMAL_PAYLOAD.servers as [CatalogRecord, CatalogRecord];
+    /** Payload order is deliberately not name order, and one tool name has two owners. */
+    const unsorted: FleetPayload = {
+      ...MINIMAL_PAYLOAD,
+      servers: [
+        { ...quake, tools: [...quake.tools, { ...arxiv.tools[0]!, description: 'Quake copy.' }] },
+        arxiv,
+      ],
+    };
+
+    beforeEach(async () => {
+      service = new CatalogService(TEST_CONFIG, { modelId: TEST_MODEL, embedQuery });
+      mockFetchOk(unsorted);
+      await service.initialize();
+      embedQuery.mockClear();
+    });
+
+    it('lists every tool by name, then owning server, without embedding or a floor', () => {
+      expect(service.list({ scope: 'tools' })).toEqual([
+        {
+          name: 'arxiv_search',
+          server: 'arxiv-mcp-server',
+          brief: 'Search arXiv papers by query.',
+          category: 'research',
+        },
+        {
+          name: 'arxiv_search',
+          server: 'earthquake-mcp-server',
+          brief: 'Quake copy.',
+          category: 'public-data',
+        },
+        {
+          name: 'earthquake_get_feed',
+          server: 'earthquake-mcp-server',
+          brief: 'Fetch real-time USGS earthquake feed.',
+          category: 'public-data',
+        },
+        {
+          name: 'earthquake_search',
+          server: 'earthquake-mcp-server',
+          brief: 'Query seismic events by location and magnitude.',
+          category: 'public-data',
+        },
+      ]);
+      expect(embedQuery).not.toHaveBeenCalled();
+    });
+
+    it('orders tools by name before owning server when the two orders disagree', async () => {
+      /** Zeta owns the first tool name and alpha the last; both own `shared_tool`. */
+      const owning = (server: string, ...tools: string[]): CatalogRecord => ({
+        ...arxiv,
+        name: server,
+        tools: tools.map((name) => ({ name, description: `${name} on ${server}.`, embedding: E1 })),
       });
-      expect(results.length).toBeLessThanOrEqual(1);
+      service = new CatalogService(TEST_CONFIG, makeMockEmbeddings({}));
+      mockFetchOk({
+        ...MINIMAL_PAYLOAD,
+        servers: [
+          owning('zeta-mcp-server', 'alpha_x', 'shared_tool'),
+          owning('alpha-mcp-server', 'zulu_y', 'shared_tool'),
+        ],
+      } satisfies FleetPayload);
+      await service.initialize();
+      expect(service.list({ scope: 'tools' }).map((e) => [e.name, e.server])).toEqual([
+        ['alpha_x', 'zeta-mcp-server'],
+        ['shared_tool', 'alpha-mcp-server'],
+        ['shared_tool', 'zeta-mcp-server'],
+        ['zulu_y', 'alpha-mcp-server'],
+      ]);
+    });
+
+    it('lists servers by name and applies the category filter in both scopes', () => {
+      expect(service.list({ scope: 'servers' })).toEqual([
+        {
+          name: 'arxiv-mcp-server',
+          server: 'arxiv-mcp-server',
+          brief: 'Search arXiv papers and fetch full-text content.',
+          category: 'research',
+        },
+        {
+          name: 'earthquake-mcp-server',
+          server: 'earthquake-mcp-server',
+          brief: 'Search USGS seismic data.',
+          category: 'public-data',
+        },
+      ]);
+      expect(
+        service.list({ scope: 'tools', category: 'research' }).map((e) => [e.name, e.server]),
+      ).toEqual([['arxiv_search', 'arxiv-mcp-server']]);
+      expect(
+        service.list({ scope: 'servers', category: 'public-data' }).map((e) => e.name),
+      ).toEqual(['earthquake-mcp-server']);
+      expect(service.list({ scope: 'tools', category: 'government' })).toEqual([]);
+      expect(embedQuery).not.toHaveBeenCalled();
+    });
+
+    it('leaves the self record out of the listing', () => {
+      for (const scope of ['tools', 'servers'] as const) {
+        expect(service.list({ scope }).some((e) => e.name.startsWith('cyanheads'))).toBe(false);
+      }
     });
   });
 
@@ -610,6 +708,87 @@ describe('CatalogService', () => {
     });
   });
 
+  describe('server stems', () => {
+    const [quake, arxiv] = MINIMAL_PAYLOAD.servers as [CatalogRecord, CatalogRecord];
+    /** A tool-less server under an arbitrary name — all name resolution needs. */
+    const named = (name: string): CatalogRecord => ({ ...arxiv, name, tools: [] });
+    async function load(servers: CatalogRecord[]) {
+      mockFetchOk({ ...MINIMAL_PAYLOAD, servers } satisfies FleetPayload);
+      await service.initialize();
+    }
+
+    it.each([
+      ['earthquake', 'earthquake-mcp-server'],
+      ['Earthquake', 'earthquake-mcp-server'],
+      ['ARXIV', 'arxiv-mcp-server'],
+      ['cyanheads', 'cyanheads-mcp-server'],
+      ['CyanHeads', 'cyanheads-mcp-server'],
+    ])('resolves the stem %s to %s', async (stem, canonical) => {
+      await load([quake, arxiv]);
+      const record = service.getServer(stem);
+      expect(record?.name).toBe(canonical);
+      expect(record).toBe(service.getServer(canonical));
+    });
+
+    it('prefers an exact or unique case-insensitive full name, and this server’s own name, over a stem', async () => {
+      await load([
+        named('alpha'),
+        named('alpha-mcp-server'),
+        named('cyanheads-mcp-server-mcp-server'),
+      ]);
+      expect(service.getServer('alpha')?.name).toBe('alpha');
+      expect(service.getServer('ALPHA')?.name).toBe('alpha');
+      expect(service.getServer('alpha-mcp-server')?.name).toBe('alpha-mcp-server');
+      expect(service.getServer('cyanheads-mcp-server')?.name).toBe('cyanheads-mcp-server');
+    });
+
+    it('leaves a case-insensitive name several servers share unresolved instead of retrying it as a stem', async () => {
+      await load([
+        named('Beta-mcp-server'),
+        named('BETA-MCP-SERVER'),
+        named('beta-mcp-server-mcp-server'),
+      ]);
+      expect(service.getServer('beta-MCP-server')).toBeNull();
+      expect(service.getServer('beta')).toBeNull();
+      expect(service.getServer('beta-mcp-server-mcp-server')?.name).toBe(
+        'beta-mcp-server-mcp-server',
+      );
+    });
+
+    it('resolves no server for a prefix several servers share', async () => {
+      await load([named('noaa-climate-mcp-server'), named('noaa-marine-mcp-server')]);
+      expect(service.getServer('noaa')).toBeNull();
+      expect(service.getServer('NOAA')).toBeNull();
+      expect(service.getServer('noaa-mcp')).toBeNull();
+      expect(service.getServer('noaa-climate')?.name).toBe('noaa-climate-mcp-server');
+    });
+
+    it('resolves no server for a prefix only one server starts with when it is not that stem', async () => {
+      await load([named('usgs-water-mcp-server'), named('pharmacogenomics-guidelines-mcp-server')]);
+      for (const prefix of ['usgs', 'USGS', 'pharmacogenomics']) {
+        expect(service.getServer(prefix)).toBeNull();
+      }
+      expect(service.getServer('usgs-water')?.name).toBe('usgs-water-mcp-server');
+    });
+
+    it('narrows getTool to an owner named by its stem', async () => {
+      await load([quake, arxiv]);
+      const owners = (name: string, server: string) =>
+        service.getTool(name, server).map((t) => [t.name, t.serverRecord.name]);
+      expect(owners('earthquake_search', 'earthquake')).toEqual([
+        ['earthquake_search', 'earthquake-mcp-server'],
+      ]);
+      expect(owners('EARTHQUAKE_SEARCH', 'Earthquake')).toEqual([
+        ['earthquake_search', 'earthquake-mcp-server'],
+      ]);
+      expect(owners('cyanheads_describe_entry', 'cyanheads')).toEqual([
+        ['cyanheads_describe_entry', 'cyanheads-mcp-server'],
+      ]);
+      expect(owners('earthquake_search', 'arxiv')).toEqual([]);
+      expect(owners('earthquake_search', 'noaa')).toEqual([]);
+    });
+  });
+
   describe('uninitialized state', () => {
     it('throws serviceUnavailable before initialize() is called', () => {
       expect(() => service.getTool('foo')).toThrow();
@@ -641,6 +820,15 @@ describe('CatalogService', () => {
         code: JsonRpcErrorCode.ServiceUnavailable,
         data: { reason: 'catalog_empty', retryable: true },
       });
+    });
+
+    it('list() throws the same retryable catalog_empty contract', () => {
+      expect(() => service.list({ scope: 'tools' })).toThrow(
+        expect.objectContaining({
+          code: JsonRpcErrorCode.ServiceUnavailable,
+          data: { reason: 'catalog_empty', retryable: true },
+        }),
+      );
     });
   });
 

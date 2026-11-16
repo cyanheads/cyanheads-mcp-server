@@ -7,6 +7,7 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getServerConfig, resetServerConfig } from '@/config/server-config.js';
 import { searchCatalogTool } from '@/mcp-server/tools/definitions/search-catalog.tool.js';
 import { initCatalogService } from '@/services/catalog/catalog-service.js';
 import type { IEmbeddingsRuntime } from '@/services/catalog/embeddings-runtime.js';
@@ -107,16 +108,47 @@ describe('cyanheads_search_catalog — input validation', () => {
   });
 
   describe('query field', () => {
-    it('rejects empty string query (min 1)', () => {
-      expect(() => searchCatalogTool.input.parse({ query: '' })).toThrow();
+    it('reads an empty string query as omitted (list mode)', () => {
+      expect(searchCatalogTool.input.parse({ query: '' }).query).toBeUndefined();
     });
 
     it('accepts a single-character query', () => {
       expect(() => searchCatalogTool.input.parse({ query: 'a' })).not.toThrow();
     });
 
-    it('rejects missing query', () => {
-      expect(() => searchCatalogTool.input.parse({})).toThrow();
+    it('accepts a missing query (list mode)', () => {
+      expect(searchCatalogTool.input.parse({}).query).toBeUndefined();
+    });
+
+    it.each(['   ', '\t\n', '  '])('still rejects whitespace-only query %j', (query) => {
+      expect(searchCatalogTool.input.safeParse({ query }).success).toBe(false);
+    });
+
+    it('keeps a misspelled query key rejected rather than listing', async () => {
+      const result = await runToolContract(searchCatalogTool, { querie: 'seismic' } as never);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { data: { reason: 'invalid_arguments' } },
+      });
+      expect(result.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining('Unrecognized key: "querie"') }),
+        ]),
+      );
+    });
+
+    it('advertises query as optional with its value constraints unchanged', () => {
+      const schema = z.toJSONSchema(searchCatalogTool.input, { io: 'input' }) as unknown as {
+        required?: string[];
+        properties: { query: Record<string, unknown> };
+      };
+      expect(schema.required ?? []).not.toContain('query');
+      expect(schema.properties.query).toMatchObject({
+        type: 'string',
+        minLength: 1,
+        maxLength: 500,
+        pattern: '\\S',
+      });
     });
 
     it('accepts a query at the maximum boundary (500 chars)', () => {
@@ -156,20 +188,22 @@ describe('cyanheads_search_catalog — input validation', () => {
     const wire = (limit: number | string) =>
       ({ query: 'test', limit }) as z.input<typeof searchCatalogTool.input>;
 
-    it.each([21, 100, 1000, '100'])(
-      'serves limit %j above 20 instead of rejecting it, matching the limit-20 page',
+    it.each([21, 100, 1000, 1001, 1e6, 1e20, '100', '1500'])(
+      'serves limit %j instead of rejecting it, matching the limit-20 page',
       async (limit) => {
         const capped = await runToolContract(searchCatalogTool, wire(20));
         const served = await runToolContract(searchCatalogTool, wire(limit));
         expect(served.isError).not.toBe(true);
         // The fixture's one match fits on one page, so nothing is cut and nothing is disclosed.
         expect(served.structuredContent).toEqual(capped.structuredContent);
+        expect(served.content).toEqual(capped.content);
         expect(served.structuredContent).toMatchObject({ totalCount: 1, nextOffset: null });
-        expect(served.structuredContent).not.toHaveProperty('truncated');
+        for (const key of ['truncated', 'shown', 'cap', 'notice'])
+          expect(served.structuredContent).not.toHaveProperty(key);
       },
     );
 
-    it.each([1001, 1e6, 0, -1, 1.5, '1001', 'abc', '1.5'])(
+    it.each([0, -1, 0.5, 1.5, 'abc', '1.5', '1e3', Number.POSITIVE_INFINITY])(
       'rejects limit %j with invalid_arguments',
       async (limit) => {
         const result = await runToolContract(searchCatalogTool, wire(limit));
@@ -180,26 +214,80 @@ describe('cyanheads_search_catalog — input validation', () => {
       },
     );
 
+    it('names the whole-number rule for a fractional limit, as .int() did', async () => {
+      const result = await runToolContract(searchCatalogTool, wire(1.5));
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          message: expect.stringContaining('limit: Invalid input: expected int, received number'),
+        },
+      });
+    });
+
     it('accepts limit at the minimum boundary (1)', () => {
       expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 1 })).not.toThrow();
     });
 
-    it('accepts limit at the per-call cap (20) and the 1000 ceiling', () => {
-      for (const limit of [20, 1000]) {
+    it('passes limits at and above the 1000 cap through to the handler unchanged', () => {
+      for (const limit of [20, 1000, 1001, 1e20]) {
         expect(searchCatalogTool.input.parse({ query: 'test', limit }).limit).toBe(limit);
       }
     });
 
-    it('advertises the 1000 ceiling and states the 20-per-call cap', () => {
-      const schema = z.toJSONSchema(searchCatalogTool.input) as unknown as {
-        properties: { limit: { minimum: number; maximum: number; description: string } };
+    it('advertises an integer limit with a default and minimum but no maximum, stating the cap once', () => {
+      const schema = z.toJSONSchema(searchCatalogTool.input, { io: 'input' }) as unknown as {
+        properties: { limit: Record<string, unknown> & { description: string } };
       };
-      expect(schema.properties.limit).toMatchObject({ minimum: 1, maximum: 1000 });
-      expect(schema.properties.limit.description).toMatch(/20 per call/);
+      const { description, ...limit } = schema.properties.limit;
+      expect(limit).toEqual({ type: 'integer', minimum: 1, default: 5 });
+      expect(description).toBe(
+        'Maximum number of results to return. Default 5; one call returns at most 1000, with a notice naming the offset to continue from when more matches follow.',
+      );
     });
 
     it('rejects non-integer limit', () => {
       expect(() => searchCatalogTool.input.parse({ query: 'test', limit: 1.5 })).toThrow();
+    });
+
+    describe('with CATALOG_CLAMP_LIMITS=false', () => {
+      beforeEach(() => {
+        resetServerConfig();
+        process.env.CATALOG_CLAMP_LIMITS = 'false';
+        getServerConfig();
+      });
+
+      afterEach(() => {
+        delete process.env.CATALOG_CLAMP_LIMITS;
+        resetServerConfig();
+      });
+
+      it('advertises maximum 1000 from the same schema object', () => {
+        const schema = z.toJSONSchema(searchCatalogTool.input, { io: 'input' }) as unknown as {
+          properties: { limit: Record<string, unknown> };
+        };
+        expect(schema.properties.limit).toMatchObject({
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          default: 5,
+        });
+      });
+
+      it.each([1001, 1e6, 1e20, '1500'])('rejects limit %j over the cap', async (limit) => {
+        const result = await runToolContract(searchCatalogTool, wire(limit));
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: {
+            data: { reason: 'invalid_arguments' },
+            message: expect.stringContaining('limit: Too big: expected number to be <=1000'),
+          },
+        });
+      });
+
+      it('still serves limit 1000 and still rejects fractions', async () => {
+        const served = await runToolContract(searchCatalogTool, wire(1000));
+        expect(served.isError).not.toBe(true);
+        expect((await runToolContract(searchCatalogTool, wire(1.5))).isError).toBe(true);
+      });
     });
 
     it('defaults limit to 5 when omitted', () => {
@@ -222,6 +310,58 @@ describe('cyanheads_search_catalog — input validation', () => {
       expect(() =>
         searchCatalogTool.input.parse({ query: 'test', scope: 'servers' }),
       ).not.toThrow();
+    });
+
+    it.each([
+      ['blank', ''],
+      ['null', null],
+    ])('treats a %s scope as omitted on both surfaces, roll-up included', async (_label, scope) => {
+      const omitted = await runToolContract(searchCatalogTool, { query: 'seismic' });
+      const blank = await runToolContract(searchCatalogTool, {
+        query: 'seismic',
+        scope,
+      } as z.input<typeof searchCatalogTool.input>);
+      expect(blank.isError).not.toBe(true);
+      expect(blank.structuredContent).toMatchObject({ scope: 'tools', serversTotal: 1 });
+      expect(blank.structuredContent).toEqual(omitted.structuredContent);
+      expect(blank.content).toEqual(omitted.content);
+    });
+
+    it('accepts serversOffset with a blank scope, as tools scope', async () => {
+      const result = await runToolContract(searchCatalogTool, {
+        query: 'seismic',
+        scope: '',
+        serversOffset: 1,
+      } as z.input<typeof searchCatalogTool.input>);
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        scope: 'tools',
+        serversOffset: 1,
+        servers: [],
+        serversTotal: 1,
+      });
+    });
+
+    it.each([' ', 'TOOLS', 'bogus'])('keeps scope %j rejected', async (scope) => {
+      const result = await runToolContract(searchCatalogTool, {
+        query: 'seismic',
+        scope,
+      } as z.input<typeof searchCatalogTool.input>);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          data: { reason: 'invalid_arguments' },
+          message: expect.stringContaining('scope: Invalid option: expected one of'),
+        },
+      });
+    });
+
+    it('advertises scope as the optional two-value enum, with no blank member', () => {
+      const schema = z.toJSONSchema(searchCatalogTool.input, { io: 'input' });
+      expect(schema.required ?? []).not.toContain('scope');
+      const scope = schema.properties?.scope as Record<string, unknown>;
+      expect(scope).toMatchObject({ type: 'string', enum: ['tools', 'servers'], default: 'tools' });
+      expect(Object.keys(scope).sort()).toEqual(['default', 'description', 'enum', 'type']);
     });
   });
 
@@ -426,6 +566,7 @@ describe('cyanheads_search_catalog — security', () => {
     expect(serialized).not.toContain('EMBEDDING_MODEL_ID');
     expect(serialized).not.toContain('CATALOG_FETCH_TIMEOUT_MS');
     expect(serialized).not.toContain('SIMILARITY_FLOOR');
+    expect(serialized).not.toContain('CATALOG_CLAMP_LIMITS');
   });
 
   it('SQL/SoQL injection string in query is passed through without executing', async () => {

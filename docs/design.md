@@ -6,7 +6,7 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `cyanheads_search_catalog` | Semantic search across fleet tools and servers. Returns ranked matches with brief summaries and the server each tool belongs to. | `query`, `scope`, `category`, `limit`, `offset`, `serversOffset` | `readOnlyHint: true`, `openWorldHint: false` |
+| `cyanheads_search_catalog` | Semantic search across fleet tools and servers, or a name-ordered listing when the query is omitted. Returns matches with full catalog descriptions and the server each tool belongs to. | `query`, `scope`, `category`, `limit`, `offset`, `serversOffset` | `readOnlyHint: true`, `openWorldHint: false` |
 | `cyanheads_describe_entry` | Description, tool list, connection URL, and per-client install snippets for a named tool or server. | `name`, `server`, `kind`, `client` | `readOnlyHint: true`, `openWorldHint: false` |
 | `cyanheads_invoke` *(Phase 2)* | Passthrough dispatch to a fleet backend. Deferred. | — | — |
 
@@ -107,8 +107,13 @@ cyanheads_search_catalog handler:
   1. Validate the 500-character raw ceiling and non-whitespace content, trim → prepend query prefix → embed query → truncate to 256 → normalize
   2. Dot product against every row in the packed Float32Array
   3. Filter by category if requested
-  4. Sort descending with name tie-breaks, slice ranked results from offset by min(limit, 20) — a larger limit discloses the cut and the next offset; independently slice the full-match server roll-up by serversOffset (cap 10)
+  4. Sort descending with name tie-breaks, slice ranked results from offset by min(limit, 1000) — a larger limit discloses the cut and the next offset; independently slice the full-match server roll-up by serversOffset (cap 10)
   5. Return with score = cosine similarity (0-1 range)
+
+cyanheads_search_catalog handler, query omitted (list mode):
+  1. Skip embedding and the similarity floor; take every entry in the scope that passes the category filter
+  2. Sort by name, then owning server; slice from offset by min(limit, 1000)
+  3. Return rows without score, with no effectiveQuery and no servers roll-up
 ```
 
 ### Refresh cadence
@@ -142,7 +147,7 @@ interface CatalogTool {
 /** A single fleet server record, with its embedding inlined. */
 interface CatalogRecord {
   name: string;                         // github basename ("arxiv-mcp-server")
-  displayName: string;                  // "arXiv"
+  displayName: string;                  // set by the producer to the server name ("arxiv-mcp-server")
   description: string;                  // from server.description on GET /mcp
   category: 'research' | 'government' | 'public-data' | 'utility';
   endpoint?: string;                    // hosted URL — drives remote/HTTP snippets; absent for local-only servers
@@ -151,6 +156,7 @@ interface CatalogRecord {
   version: string;                      // captured at generation time
   auth: string;                         // open string; currently "none"
   requiredEnvVars?: string[];           // env vars the server's manifest marks isRequired; scaffolded into JSON snippets
+  composesWith?: string[];              // maintainer-written names of servers that compose with this one, in published order; an entry may name no catalog server
   embedding: number[];                  // length === FleetPayload.embeddingDims, L2-normalized
   tools: CatalogTool[];
 }
@@ -230,28 +236,30 @@ curl:             curl -X POST ${endpoint} -H 'Content-Type: application/json' -
 
 ### `cyanheads_search_catalog`
 
-**Description:** Search fleet tools and servers by natural-language description. Returns ranked matches with brief summaries and the server each tool belongs to. Use `scope: 'servers'` to find which server handles a workflow; default `scope: 'tools'` to find specific tools.
+**Description:** Search fleet tools and servers by natural-language description. Returns ranked matches with the full catalog description of each entry and the server each tool belongs to. Omit query to list every tool or server in name order instead, optionally filtered by category. Use scope "servers" to find which server handles a workflow; use the default scope "tools" to find specific tools.
 
 **Input schema:**
 
 ```ts
 z.object({
-  query: z.string().min(1).max(500).regex(/\S/u).describe(
-    'Natural language search query. 1-500 raw characters; non-whitespace text required. Trimmed before embedding and echo.'
+  query: z.preprocess(blankAsUnset, z.string().min(1).max(500).regex(/\S/u).optional()).describe(
+    'Natural language search query. Describe what you want to accomplish, a workflow, or a capability area. 1-500 raw characters; surrounding whitespace is trimmed. Must contain non-whitespace text. Omit to list every entry in the scope in name order instead.'
   ),
-  scope: z.enum(['tools', 'servers']).default('tools').describe(
-    'What to search. "tools" returns individual tool matches; "servers" returns server-level matches.'
+  scope: z.preprocess(blankAsUnset, z.enum(['tools', 'servers']).default('tools')).describe(
+    'What to search or list. "tools" returns individual tool matches; "servers" returns server-level matches.'
   ),
-  category: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['research', 'government', 'public-data', 'utility']).optional()).describe(
-    'Filter by catalog category. Omit to search all categories.'
+  category: z.preprocess(blankAsUnset, z.enum(['research', 'government', 'public-data', 'utility']).optional()).describe(
+    'Filter by catalog category. Omit to include all categories. Categories are catalog labels, not publisher types (a federal agency API can be public-data), and a wrong guess silently drops the matching server, so set this only when the category is known.'
   ),
-  limit: z.number().int().min(1).max(1000).default(5).describe(
-    'Maximum number of results to return (1-1000). Default 5. At most 20 per call: a larger limit returns up to 20, with a notice naming the offset to continue from when more matches follow.'
+  limit: z.number().min(1) /* whole numbers only; maximum 1000 only when CATALOG_CLAMP_LIMITS=false */.default(5).describe(
+    'Maximum number of results to return. Default 5; one call returns at most 1000, with a notice naming the offset to continue from when more matches follow.'
   ),
-  offset: z.number().int().min(0).default(0).describe('Ranked-result offset; use nextOffset to continue.'),
-  serversOffset: z.number().int().min(0).default(0).describe('Independent roll-up offset, 10 per page; must be zero in servers scope.'),
+  offset: z.number().int().min(0).default(0).describe('Result offset. Use nextOffset with the same query, scope, category, and limit; pages use the current catalog.'),
+  serversOffset: z.number().int().min(0).default(0).describe('Independent server roll-up offset (10 per page). Use nextServersOffset; must be zero in servers scope and when query is omitted.'),
 })
 ```
+
+`blankAsUnset` reads `''` as unset, so a form client's untouched field neither fails validation nor sets a value. `tools/list` advertises `limit` as an integer with `minimum: 1` and no `maximum`; with `CATALOG_CLAMP_LIMITS=false` it advertises and enforces `maximum: 1000`.
 
 **Output schema:**
 
@@ -268,14 +276,14 @@ z.object({
     server: z.string().describe(
       'Server package name that owns this tool. Same as name when scope is "servers". Pass name and server to cyanheads_describe_entry to describe exactly this row.'
     ),
-    brief: z.string().describe('One-line summary of what this tool or server does.'),
+    brief: z.string().describe("The tool's full catalog description, or the server's description in servers scope."),
     category: z.enum(['research', 'government', 'public-data', 'utility']).describe(
       'Catalog category for the owning server.'
     ),
-    score: z.number().describe(
-      'Cosine similarity between query and entry, 0-1. Higher is better. Compare only within a single response.'
+    score: z.number().optional().describe(
+      'Cosine similarity between query and entry, in [0, 1]. Higher is better. Compare only within a single response. Absent when query is omitted.'
     ),
-  })).describe('Ranked matches, best first.'),
+  })).describe('Ranked matches, best first; with query omitted, every listed entry in name order.'),
   scope: z.enum(['tools', 'servers']).describe('Scope that was searched.'),
   servers: z.array(z.object({
     name: z.string().describe('Server package name.'),
@@ -298,30 +306,32 @@ z.object({
 
 ```ts
 enrichment: {
-  effectiveQuery: z.string().describe('The query that was searched.'),
-  totalCount: z.number().describe('Total relevant matches before the limit was applied.'),
-  truncated: z.boolean().optional().describe('True when limit exceeded the 20-per-call cap and more matches follow this page.'),
+  effectiveQuery: z.string().optional().describe('The query that was searched. Absent when query is omitted.'),
+  totalCount: z.number().describe('Total relevant matches, or listed entries when query is omitted, before the limit was applied.'),
+  truncated: z.boolean().optional().describe('True when limit exceeded the 1000-per-call cap and more matches follow this page.'),
   shown: z.number().optional().describe('Results returned on this capped page.'),
   cap: z.number().optional().describe('Per-call result cap that was applied.'),
-  notice: z.string().optional().describe('Guidance for zero matches, an exhausted result page, or a page cut to the 20-per-call cap with more matches following (names the offset to continue from). Absent otherwise.'),
+  notice: z.string().optional().describe('Guidance for zero matches, an exhausted result page, or a page cut to the 1000-per-call cap with more matches following (names the offset to continue from). Absent otherwise.'),
 }
 ```
 
 **Notes:**
 - No `phase` field. Output shape is stable; score is always cosine similarity.
 - `totalCount` reflects the post-threshold count. A configurable minimum similarity (default `SIMILARITY_FLOOR=0.3`) suppresses noise from cold queries; results below the floor don't appear in `results` or `totalCount`.
-- The `servers` roll-up is present only for `scope: 'tools'`, ordered by `topScore` descending (name-tiebroken) and capped at 10 per page; `serversTotal` carries the true distinct count. `matchedTools` and `topScore` come from the full tool match set, independently of both offsets and the result limit.
+- List mode: `query` omitted, `null`, or exactly `""` lists every entry in the scope in name order, then owning server, optionally filtered by `category`. It embeds nothing and applies no similarity floor; rows carry no `score`, the response no `effectiveQuery` and no server roll-up, and `totalCount` counts the listed entries. A nonzero `serversOffset` fails with `invalid_servers_offset`. A whitespace-only query still fails validation.
+- Only the exact empty string reads as unset on `scope` and `category`; `" "` or `"TOOLS"` still fail validation.
+- The `servers` roll-up is present only for `scope: 'tools'` searches, ordered by `topScore` descending (name-tiebroken) and capped at 10 per page; `serversTotal` carries the true distinct count. `matchedTools` and `topScore` come from the full tool match set, independently of both offsets and the result limit. Each roll-up row's description and category come from the catalog snapshot that scored its tools, so a background refresh during the query cannot blank a row.
 - `offset` and `serversOffset` default to zero and advance independently through nullable `nextOffset` and `nextServersOffset`. Continue with the same query, scope, category, and limit. Pages use the current catalog; a refresh can change ordering. Beyond-end offsets return empty pages with the full totals and null continuation. Servers scope omits every roll-up field and rejects a nonzero `serversOffset`.
 - Zero matches are a successful empty response — `results: []` plus a `notice` on how to broaden the search — not an error.
-- `limit` accepts 1-1000 but one call returns at most 20 results. A larger `limit` is served, not rejected, since it has one reading: return the first 20, and when more matches follow, call `ctx.enrich.truncated` for `truncated: true`, `shown`, `cap: 20`, and a `notice` naming the requested limit, the remaining count, and `nextOffset` (`limit 100 exceeds the per-call cap of 20; 23 more results follow. Continue with offset 20.`). A page that holds every remaining match carries no truncation fields. `nextOffset` and `totalCount` keep their formulas, so continuing with the same oversized `limit` pages through every match exactly once. The 1000 ceiling only separates "return everything" from garbage input such as `1e6`; it bounds no cost, because the full match set is ranked before the slice.
+- `limit` is a whole number of at least 1, and one call returns at most 1000 results. A larger `limit` is served at 1000, not rejected, since it has one reading: when more matches follow, `ctx.enrich.truncated` adds `truncated: true`, `shown`, `cap: 1000`, and a `notice` naming the requested limit, the remaining count, and `nextOffset` (`limit 5000 exceeds the per-call cap of 1000; 23 more results follow. Continue with offset 1000.`). A page that holds every remaining match carries no truncation fields. `nextOffset` and `totalCount` keep their formulas, so continuing with the same oversized `limit` pages through every match exactly once. The cap bounds response size, not work: the full match set is ranked before the slice. A clamped call increments the `mcp.input.count_clamped` counter, and the search log line records the served limit. `CATALOG_CLAMP_LIMITS=false` advertises and enforces `maximum: 1000`, so a larger `limit` is rejected.
 
 **Error contract:**
 
 ```ts
 errors: [
   { reason: 'invalid_servers_offset', code: JsonRpcErrorCode.ValidationError,
-    when: 'Nonzero serversOffset in servers scope.',
-    recovery: 'Set serversOffset to zero in servers scope; use offset to page server results.' },
+    when: 'A nonzero serversOffset is supplied in servers scope or with query omitted.',
+    recovery: 'Set serversOffset to zero in servers scope and when query is omitted; use offset to page results.' },
   { reason: 'catalog_empty', code: JsonRpcErrorCode.ServiceUnavailable,
     when: 'Catalog has not finished loading.',
     recovery: 'Retry in a few seconds; the catalog is still loading.',
@@ -329,26 +339,28 @@ errors: [
 ]
 ```
 
-**`format()` parity:** renders `scope`, offsets and continuation, each result's `name`, `server`, `brief`, `category`, `score`, and the `servers` roll-up. Both tool formatters preserve catalog descriptions as literal text in delimiter-sized framework code blocks. Single-line identifiers use delimiter-sized code spans; multiline metadata and snippet payloads use code blocks. Structured values remain verbatim.
+**`format()` parity:** renders `scope`, offsets and continuation, each result's `name`, `server`, `brief`, `category`, `score` (when present), and the `servers` roll-up. Both tool formatters preserve catalog descriptions as literal text in delimiter-sized framework code blocks. Single-line identifiers use delimiter-sized code spans; multiline metadata and snippet payloads use code blocks. Structured values remain verbatim.
 
 **Auth:** none in v0. Scope `tool:cyanheads_search_catalog:read` if/when auth is enabled.
 
 ### `cyanheads_describe_entry`
 
-**Description:** Return descriptions, connection metadata, and per-client install snippets for a named tool or server. Tool entries include the owning server; server entries also include the full tool inventory. Both kinds carry `npm`, `github`, optional `endpoint`, `auth`, optional `requiredEnvVars`, `installSnippets`, and optional `installNotice`. Call `cyanheads_search_catalog` first to find valid names. Catalog entries contain descriptions; tool schemas come from the connected server's `tools/list`.
+**Description:** Return the description and install snippets for a named tool or server. For tools: the description, owning server, and connection metadata. For either kind: local (stdio, via npx) install snippets for every published server, plus remote (HTTP) connection snippets when a hosted endpoint exists — for every supported client, or one client via the client parameter.
+
+Tool entries include the owning server; server entries also include the full tool inventory. Both kinds carry `npm`, `github`, optional `endpoint`, `auth`, optional `requiredEnvVars`, optional `composesWith`, `installSnippets`, and optional `installNotice`. Catalog entries contain descriptions; tool schemas come from the connected server's `tools/list`.
 
 **Input schema:**
 
 ```ts
 z.object({
   name: z.string().min(1).max(64).describe(
-    'Tool name (snake_case, e.g. "earthquake_search_events") or server name (kebab-case, e.g. "earthquake-mcp-server"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server.'
+    'Tool name (snake_case, e.g. "earthquake_search_events") or server name (kebab-case, e.g. "earthquake-mcp-server", or its stem before -mcp-server, e.g. "earthquake"). 1-64 characters. Exact names win; unique case-insensitive names resolve to canonical names. A tool name that more than one server owns also needs server. Use cyanheads_search_catalog to discover valid names.'
   ),
   server: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(64).optional()).describe(   // a form client's blank reads as unset
-    'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with this name. 1-64 characters, resolved like a server name. Required when the tool name has more than one owner; with a server name, it must name the same server.'
+    'Server that owns the tool to describe — the server value cyanheads_search_catalog returned with this name. 1-64 characters, resolved like a server name, stem included. Required when the tool name has more than one owner; with a server name, it must name the same server.'
   ),
   kind: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['tool', 'server']).optional()).describe(
-    'Whether name refers to a tool or server. Omit to auto-detect: underscores → tools, hyphens → servers.'
+    'Whether name refers to a tool or server. Omit to auto-detect: names containing underscores are treated as tools; names containing hyphens are treated as servers; names with neither, such as a server stem ("pubmed"), are looked up as both.'
   ),
   client: z.preprocess((v) => (v === '' ? undefined : v), z.enum(CLIENT_IDS).optional()).describe(   // 'claude-code' | 'cline' | 'codex' | 'cursor' | 'curl' | 'gemini' | 'streamable-http'
     'Return install snippets for this client only (both local and remote transports when available). "streamable-http" selects the generic mcpServers JSON; "curl" selects a connectivity probe for hosted servers. Omit for all supported clients.'
@@ -356,9 +368,15 @@ z.object({
 })
 ```
 
-**Output schema** — `z.object({ result: z.discriminatedUnion('kind', [...]) })`. The framework's `tool()` requires a top-level `ZodObject`; the discriminated union is wrapped in `result` so `format()` can dispatch on `result.kind`. Branches as documented in `describe-entry.tool.ts`.
+**Output schema** — `z.object({ result: z.discriminatedUnion('kind', [...]) })`. The framework's `tool()` requires a top-level `ZodObject`; the discriminated union is wrapped in `result` so `format()` can dispatch on `result.kind`. Branches as documented in `describe-entry.tool.ts`. Both branches carry the optional `composesWith: string[]`: the server maintainer's list of servers that compose with the described server (for a tool, its owning server's list), in published order and as published, so an entry may name no catalog server. It is omitted when the catalog lists none; the self record has none. `content[]` renders it as a `## Composes with` bullet list after the description, followed by "Describe any of these with cyanheads_describe_entry." The catalog payload `version` stays `"2"`.
 
-**Resolution:** without `server`, a tool name resolves to every row with that exact spelling, else to every row of a case-insensitive match that has one spelling; several spellings resolve to nothing. More than one owning row fails with `ambiguous_owner` (`ValidationError`), naming the owners in payload order in the message and `data.owners`. With `server`, the server resolves like a server name, then the tool name matches that owner's rows exactly, then by unique case-insensitive match; a server name must resolve to the same server. The self record answers only when no remote candidate exists, or when `server` names this server and its remote entry lacks the tool.
+**Server resolution:** exact name, then unique case-insensitive name, then the self record (`cyanheads-mcp-server`). A name matching none of those is retried once as `<name>-mcp-server` through the same three steps, so a stem (`pubmed`) resolves to `pubmed-mcp-server` and `cyanheads` to the self record. A full name wins over its stem. A case-insensitive name several servers share resolves to nothing and is not retried, and a prefix several servers share (`noaa`) is not a stem and resolves to nothing. The `server` input resolves the same way.
+
+**Kind detection:** with `kind` omitted, a name containing `_` is a tool and one containing `-` a server; a name with neither, such as a bare stem, is looked up as both kinds, and a match on both fails with `ambiguous_kind`.
+
+**`not_found`:** the message names the kind searched (the kind set or auto-detected, else "tool or server") and the `server` scope when `server` was given. When the other kind has the name, it names that match and the recovery hint reads `Set kind to "<other kind>" and call cyanheads_describe_entry again.`
+
+**Tool resolution:** without `server`, a tool name resolves to every row with that exact spelling, else to every row of a case-insensitive match that has one spelling; several spellings resolve to nothing. More than one owning row fails with `ambiguous_owner` (`ValidationError`), naming the owners in payload order in the message and `data.owners`. With `server`, the server resolves like a server name, then the tool name matches that owner's rows exactly, then by unique case-insensitive match; a server name must resolve to the same server. The self record answers only when no remote candidate exists, or when `server` names this server and its remote entry lacks the tool.
 
 **Error contract:** `not_found`, `ambiguous_kind`, `ambiguous_owner`, `catalog_empty`. See `describe-entry.tool.ts` for full text.
 
@@ -385,27 +403,30 @@ interface ICatalogService {
   /** Fetch fleet.json, validate, build vector index, load embedding model. */
   initialize(): Promise<void>;
 
-  /** Semantic search. Embeds query, dot products against in-memory vectors. */
+  /** Semantic search. Embeds query, dot products against in-memory vectors; returns every match above the floor, best first. */
   search(params: {
     query: string;
     scope: 'tools' | 'servers';
     category?: CatalogCategory;
-    limit?: number;
   }): Promise<CatalogSearchResult[]>;
+
+  /** Every entry in the scope that passes the category filter, unranked: no embedding, no floor. Ordered by name, then owning server. */
+  list(params: { scope: 'tools' | 'servers'; category?: CatalogCategory }): CatalogEntry[];
 
   /**
    * Every candidate row in payload order: all owners of the exact name, else
    * all owners of a single-spelling case-insensitive match, else this server's
-   * own tool. `server` narrows to one owner (exact, then unique case-insensitive)
+   * own tool. `server` narrows to one owner (resolved like `getServer()`, stems included)
    * and reaches the self tool when it names this server. The caller turns several
    * candidates into `ambiguous_owner`. Output is canonical.
    */
   getTool(name: string, server?: string): CatalogToolEntry[];
 
   /**
-   * Exact remote lookup first, then a unique case-insensitive remote match.
-   * Ambiguous folds return null; only no remote candidate reaches the static
-   * self record for `cyanheads-mcp-server`. Output is canonical.
+   * Exact remote lookup first, then a unique case-insensitive remote match,
+   * then the static self record for `cyanheads-mcp-server`. A name with none of
+   * those is retried once as `<name>-mcp-server`, so a stem resolves. Ambiguous
+   * folds return null and are not retried. Output is canonical.
    */
   getServer(name: string): CatalogRecord | null;
 
@@ -423,12 +444,17 @@ type CatalogCategory = 'research' | 'government' | 'public-data' | 'utility';
 
 type CatalogToolEntry = CatalogTool & { serverRecord: CatalogRecord };
 
-interface CatalogSearchResult {
+/** One catalog row: a tool, or a server in servers scope. `list()` returns these. */
+interface CatalogEntry {
   name: string;
   server: string;
-  brief: string;
+  brief: string;      // the full catalog description
   category: CatalogCategory;
-  score: number;   // cosine similarity 0-1
+}
+
+interface CatalogSearchResult extends CatalogEntry {
+  score: number;      // cosine similarity 0-1
+  serverRecord: CatalogRecord;   // the owning server from the index snapshot that scored this row
 }
 ```
 
@@ -465,6 +491,7 @@ Fetches `CATALOG_URL`, validates the v2 payload with Zod, and requires a nonempt
 | `CATALOG_REFRESH_SECONDS` | No | `3600` | Background poll interval. Server re-fetches and swaps if `generatedAt` changed. `0` disables; positive values up to `2147483.647` seconds use the runtime's millisecond timer resolution. |
 | `EMBEDDING_MODEL_ID` | No | `Snowflake/snowflake-arctic-embed-m-v1.5` | Must match `FleetPayload.embeddingModel`; mismatch is a startup error. |
 | `SIMILARITY_FLOOR` | No | `0.3` | Minimum cosine similarity for a result to appear in `cyanheads_search_catalog` output. Must be within `[0, 1]`. |
+| `CATALOG_CLAMP_LIMITS` | No | `true` | Boolean string. `true` serves a `cyanheads_search_catalog` `limit` above 1000 at 1000 with a disclosure and advertises no `maximum`; `false` advertises and enforces `maximum: 1000`, rejecting a larger `limit`. |
 | `MCP_AUTH_MODE` | No | `none` | Framework default for v0 public discovery. |
 
 Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, …) are owned by `@cyanheads/mcp-ts-core`.
@@ -538,7 +565,7 @@ Phase 2 is the only place `invoke` lands. Phase 1 does not register it.
 4. Add `src/services/catalog/embeddings-runtime.ts` — query embed pipeline.
 5. Update `src/mcp-server/tools/definitions/search-catalog.tool.ts` — drop `phase`, drop fulltext path, score becomes float.
 6. `src/mcp-server/tools/definitions/describe-entry.tool.ts` — resolve canonical names and return connection metadata and client-filtered install snippets for tools and servers.
-7. Update `src/config/server-config.ts` — add `EMBEDDING_MODEL_ID`, `SIMILARITY_FLOOR`, `CATALOG_REFRESH_SECONDS`; drop unused vars.
+7. Update `src/config/server-config.ts` — add `EMBEDDING_MODEL_ID`, `SIMILARITY_FLOOR`, `CATALOG_REFRESH_SECONDS`, `CATALOG_CLAMP_LIMITS`; drop unused vars.
 8. Update tests in `tests/services/catalog.service.test.ts` and `tests/tools/search-catalog.tool.test.ts` to use embedding fixtures.
 9. Rewrite README in marketing-style positioning.
 10. `bun run devcheck`.
@@ -578,11 +605,19 @@ Portfolio side:
 
 - **The catalog supports hosted and local-only servers.** An optional `endpoint` controls HTTP snippets; the npm package supplies local stdio snippets. Endpoint-less entries such as `mailchimp-mcp-server` expose their required environment variables alongside install guidance.
 
-- **Self descriptions use a local fallback.** `src/services/catalog/self-record.ts` derives version and description from `package.json` and tools from the registered definitions. Exact remote names win, then unique case-insensitive remote matches; ambiguous folds return no match. Only the absence of a remote candidate (under the named owner, when `server` is set) reaches self, so remote metadata takes precedence after any refresh. The self record stays outside the vector index and is reachable only through name lookup.
+- **Self descriptions use a local fallback.** `src/services/catalog/self-record.ts` derives version and description from `package.json` and tools from the registered definitions. Exact remote names win, then unique case-insensitive remote matches; ambiguous folds return no match, and the `cyanheads` stem reaches self through the `-mcp-server` retry. Only the absence of a remote candidate (under the named owner, when `server` is set) reaches self, so remote metadata takes precedence after any refresh. The self record stays outside the vector index and is reachable only through name lookup.
 
 - **Shared tool names resolve by owner, and ambiguity is an error.** Same-spelling tools under different servers stay separate search rows, so `cyanheads_describe_entry` takes an optional `server` that pairs with a result's `name` to describe exactly that row. Without it, a name with several owners fails with `ambiguous_owner` rather than returning whichever owner came last in payload order. An error, like `ambiguous_kind`, rather than a success listing candidates: a candidates result would add a third `result.kind` with no install snippets. Rejecting catalogs with shared names was ruled out because shared spellings are a valid catalog state and rejecting a whole payload over one name would stall refreshes.
 
-- **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. `CatalogService.initialize()` validates server names at load time and rejects entries with underscores so the heuristic stays reliable.
+- **`describe` auto-detects `kind` from name format.** Tool names use underscores; server names use hyphens. `CatalogService.initialize()` validates server names at load time and rejects entries with underscores so the heuristic stays reliable. A name with neither character, a bare stem or a tool such as `calculate`, is looked up as both kinds.
+
+- **An omitted query lists the catalog.** A search with no query has one reading, "everything in this scope", and browsing a category was otherwise unreachable. List mode embeds nothing, applies no floor, and returns rows in name order without scores.
+
+- **One call returns at most 1000 results, and a larger `limit` is served at the cap.** 1000 is sized so a page of the heaviest tool rows stays under about 1 MB per response surface. Serving the cap with a `truncated` disclosure and a continuation offset gives the oversized request its one sensible reading instead of a rejection. `CATALOG_CLAMP_LIMITS=false` restores the strict advertised and enforced maximum for deployments that prefer it.
+
+- **A server stem resolves by retrying `<name>-mcp-server`.** Every fleet server is named `<stem>-mcp-server`, so a stem has one reading. The retry runs only when the name has no candidate at all: a full name wins over its stem, an ambiguous case-insensitive name is not retried, and a prefix several servers share is not a stem.
+
+- **`composesWith` passes through as published.** The list is maintainer-written, so the server does not validate it against the catalog; a name with no catalog entry degrades to an accurate `not_found` when described. Adding it to the payload is additive, so the schema version stays `"2"`.
 
 ---
 

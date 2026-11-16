@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { getServerConfig, resetServerConfig } from '@/config/server-config.js';
+import { clampLimitsEnabled, getServerConfig, resetServerConfig } from '@/config/server-config.js';
 
 /**
  * The literal text an unsubstituted `$\{VAR}` interpolation leaves behind — what
@@ -42,6 +42,55 @@ describe('server config bounds', () => {
       catalogRefreshSeconds: 3600,
       embeddingModelId: 'Snowflake/snowflake-arctic-embed-m-v1.5',
       similarityFloor: 0.3,
+      clampLimits: true,
+    });
+  });
+
+  describe('CATALOG_CLAMP_LIMITS', () => {
+    it.each([
+      ['false', false],
+      ['FALSE', false],
+      ['0', false],
+      ['off', false],
+      ['no', false],
+      ['disabled', false],
+      ['true', true],
+      ['1', true],
+      ['on', true],
+    ])('parses %s as %s', (value, expected) => {
+      expect(parseWith('CATALOG_CLAMP_LIMITS', value).clampLimits).toBe(expected);
+    });
+
+    it.each(['', unsubstituted('CATALOG_CLAMP_LIMITS')])(
+      'reads %s as unset and keeps clamping on',
+      (value) => {
+        expect(parseWith('CATALOG_CLAMP_LIMITS', value).clampLimits).toBe(true);
+      },
+    );
+
+    it.each(['maybe', 'nope', '2'])('fails naming the variable for %s', (value) => {
+      expect(() => parseWith('CATALOG_CLAMP_LIMITS', value)).toThrow(/CATALOG_CLAMP_LIMITS/);
+    });
+
+    /**
+     * Input schemas read the setting during import-time emission, before the
+     * framework loads `.env` under Node, so reading it must never parse and
+     * cache the config: an unparsed config reads as on, and the setting
+     * follows whatever `getServerConfig()` parses later.
+     */
+    it('reads the parsed setting without parsing, clamping until a config is parsed', () => {
+      resetServerConfig();
+      process.env.CATALOG_CLAMP_LIMITS = 'false';
+      try {
+        expect(clampLimitsEnabled()).toBe(true);
+        expect(clampLimitsEnabled()).toBe(true);
+        expect(getServerConfig().clampLimits).toBe(false);
+        expect(clampLimitsEnabled()).toBe(false);
+      } finally {
+        delete process.env.CATALOG_CLAMP_LIMITS;
+      }
+      resetServerConfig();
+      expect(clampLimitsEnabled()).toBe(true);
     });
   });
 

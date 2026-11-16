@@ -50,6 +50,13 @@
           "default": "3600"
         },
         {
+          "name": "CATALOG_CLAMP_LIMITS",
+          "description": "true serves a cyanheads_search_catalog limit above 1000 at 1000; false rejects it.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
           "name": "EMBEDDING_MODEL_ID",
           "description": "Hugging Face model id for query embedding. Must match fleet.json.embeddingModel.",
           "format": "string",
@@ -134,6 +141,13 @@
           "format": "string",
           "isRequired": false,
           "default": "3600"
+        },
+        {
+          "name": "CATALOG_CLAMP_LIMITS",
+          "description": "true serves a cyanheads_search_catalog limit above 1000 at 1000; false rejects it.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "EMBEDDING_MODEL_ID",

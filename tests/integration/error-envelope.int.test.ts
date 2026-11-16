@@ -39,7 +39,7 @@ function textOf(result: Awaited<ReturnType<typeof runToolContract>>) {
 
 describe('argument rejection envelope', () => {
   it('classifies a constraint failure as InvalidParams, not ValidationError', async () => {
-    const result = await runToolContract(searchCatalogTool, { query: '' });
+    const result = await runToolContract(searchCatalogTool, { query: '   ' });
 
     expect(result.isError).toBe(true);
     expect(errorOf(result)?.code).toBe(JsonRpcErrorCode.InvalidParams);
@@ -47,7 +47,7 @@ describe('argument rejection envelope', () => {
   });
 
   it('names the offending field on both surfaces', async () => {
-    const result = await runToolContract(searchCatalogTool, { query: '' });
+    const result = await runToolContract(searchCatalogTool, { query: '   ' });
 
     expect(errorOf(result)?.message).toContain('query');
     expect(errorOf(result)?.message).toContain('cyanheads_search_catalog');
@@ -55,7 +55,7 @@ describe('argument rejection envelope', () => {
   });
 
   it('closes content[] with the reason term a caller branches on', async () => {
-    const result = await runToolContract(searchCatalogTool, { query: '' });
+    const result = await runToolContract(searchCatalogTool, { query: '   ' });
 
     expect(textOf(result)).toMatch(/^Error:/);
     expect(textOf(result)).toContain('(reason invalid_arguments');
@@ -82,7 +82,7 @@ describe('argument rejection envelope', () => {
    * still ships on `structuredContent`, so no surface loses it.
    */
   it('suppresses a duplicate Recovery line while keeping the hint structured', async () => {
-    const result = await runToolContract(searchCatalogTool, { query: '' });
+    const result = await runToolContract(searchCatalogTool, { query: '   ' });
 
     expect(textOf(result)).not.toContain('Recovery:');
     expect((errorOf(result)?.data?.recovery as { hint?: string } | undefined)?.hint).toBeTruthy();
@@ -107,7 +107,7 @@ describe('declared contract reasons', () => {
     expect(errorOf(result)?.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(errorOf(result)?.data?.reason).toBe('invalid_servers_offset');
     expect(errorOf(result)?.data?.recovery).toEqual({
-      hint: 'Set serversOffset to zero in servers scope; use offset to page server results.',
+      hint: 'Set serversOffset to zero in servers scope and when query is omitted; use offset to page results.',
     });
     expect(textOf(result)).toContain('Set serversOffset to zero');
     expect(textOf(result)).toContain('invalid_servers_offset');

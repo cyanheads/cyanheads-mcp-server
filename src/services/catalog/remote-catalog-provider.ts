@@ -35,6 +35,7 @@ const CatalogRecordSchema = z.object({
   version: z.string(),
   auth: z.string(),
   requiredEnvVars: z.array(z.string()).optional(),
+  composesWith: z.array(z.string()).optional(),
   embedding: EmbeddingSchema,
   tools: z.array(CatalogToolSchema),
 });

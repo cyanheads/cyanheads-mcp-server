@@ -27,20 +27,13 @@ const TEST_CONFIG = {
 };
 
 /**
- * Fixture designed to exercise the ambiguous_kind path:
- * the catalog must contain both a server and a tool that could
- * be confused. The tool name must NOT match the auto-detect
- * heuristic by containing underscores (tools) or hyphens (servers)
- * for the ambiguous case. Here we use a server whose name shares
- * a string with a tool's description path — but the real ambiguity
- * test requires a name with no hyphens or underscores (neither auto-
- * detects to one side). Since server names always have hyphens and
- * tool names always have underscores, a name like "plain" can match
- * neither heuristic; if the catalog had both a server and tool called
- * "plain" that would trigger ambiguity. But the catalog schema
- * enforces snake_case for tools and kebab-case for servers, so collision
- * is impossible in practice. The handler path handles this defensively —
- * we test it by calling getTool+getServer in an edge scenario.
+ * Two-server fixture for the handler, edge-case, and security suites.
+ * Auto-detection reads a name with underscores as a tool and one with hyphens
+ * as a server; a name with neither is looked up as both, the only path to
+ * ambiguous_kind. Server names never contain underscores (the index rejects
+ * them), but tool names need not contain one — the live fleet's `calculate`
+ * has none — and a server also answers to its stem ("arxiv"), so a tool named
+ * like a stem collides with that server.
  */
 const FLEET_PAYLOAD: FleetPayload = {
   version: '2',
@@ -128,11 +121,12 @@ describe('cyanheads_describe_entry — input validation', () => {
   });
 
   it('accepts the longest identifiers the live fleet actually uses', () => {
-    // Longest catalog tool name (42 chars) and server name (32 chars) as of the
-    // measurement this bound was set from, plus this server's own tool names.
+    // Longest catalog tool name (42 chars) and server name (38 chars) in the
+    // published catalog, plus this server's own names.
     const realNames = [
       'courtlistener_search_financial_disclosures',
       'openstates_get_legislators_by_location',
+      'pharmacogenomics-guidelines-mcp-server',
       'faa-aircraft-registry-mcp-server',
       'nhtsa-vehicle-safety-mcp-server',
       'cyanheads-mcp-server',
@@ -443,20 +437,57 @@ describe('cyanheads_describe_entry — edge cases', () => {
     });
   });
 
-  it('throws not_found for a known server name when kind="tool"', async () => {
+  it('throws not_found for a known server name when kind="tool", naming the server', async () => {
     const ctx = createMockContext({ errors: describeEntryTool.errors });
     const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'tool' });
     await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
+      message:
+        'No tool named "earthquake-mcp-server" in the catalog; it matches server "earthquake-mcp-server".',
+      data: {
+        reason: 'not_found',
+        recovery: { hint: 'Set kind to "server" and call cyanheads_describe_entry again.' },
+      },
+    });
+  });
+
+  it('throws not_found for a known tool name when kind="server", naming the tool', async () => {
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'server' });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
+      message:
+        'No server named "earthquake_search" in the catalog; it matches tool "earthquake_search".',
+      data: {
+        reason: 'not_found',
+        recovery: { hint: 'Set kind to "tool" and call cyanheads_describe_entry again.' },
+      },
+    });
+  });
+
+  it('names the server a stem resolves to when kind="tool"', async () => {
+    const ctx = createMockContext({ errors: describeEntryTool.errors });
+    const input = describeEntryTool.input.parse({ name: 'arXiv', kind: 'tool' });
+    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
+      message: 'No tool named "arXiv" in the catalog; it matches server "arxiv-mcp-server".',
       data: { reason: 'not_found' },
     });
   });
 
-  it('throws not_found for a known tool name when kind="server"', async () => {
+  it('keeps the plain message when the other kind’s match is outside the named server', async () => {
     const ctx = createMockContext({ errors: describeEntryTool.errors });
-    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'server' });
-    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'not_found' },
+    const input = describeEntryTool.input.parse({
+      name: 'earthquake-mcp-server',
+      kind: 'tool',
+      server: 'arxiv',
     });
+    const err = await Promise.resolve(describeEntryTool.handler(input, ctx)).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({
+      message: 'No tool named "earthquake-mcp-server" under server "arxiv" in the catalog',
+      data: { reason: 'not_found', name: 'earthquake-mcp-server', server: 'arxiv' },
+    });
+    // A direct handler call carries no recovery of its own; the framework fills the declared one.
+    expect((err as { data: Record<string, unknown> }).data).not.toHaveProperty('recovery');
   });
 
   it('unicode name that does not match catalog returns not_found', async () => {

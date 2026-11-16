@@ -27,6 +27,7 @@
         "CATALOG_URL": "${user_config.catalog_url}",
         "CATALOG_FETCH_TIMEOUT_MS": "${user_config.catalog_fetch_timeout_ms}",
         "CATALOG_REFRESH_SECONDS": "${user_config.catalog_refresh_seconds}",
+        "CATALOG_CLAMP_LIMITS": "${user_config.catalog_clamp_limits}",
         "EMBEDDING_MODEL_ID": "${user_config.embedding_model_id}",
         "SIMILARITY_FLOOR": "${user_config.similarity_floor}"
       }
@@ -58,6 +59,13 @@
       "description": "Background poll interval for fleet.json refreshes in seconds. 0 disables refresh; positive values up to 2147483.647 use the runtime's millisecond timer resolution.",
       "required": false,
       "default": "3600"
+    },
+    "catalog_clamp_limits": {
+      "type": "boolean",
+      "title": "Clamp Search Limits",
+      "description": "On, a cyanheads_search_catalog limit above 1000 returns 1000 results; off, it is rejected.",
+      "required": false,
+      "default": true
     },
     "embedding_model_id": {
       "type": "string",

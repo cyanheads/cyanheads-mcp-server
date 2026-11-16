@@ -1,14 +1,17 @@
 /**
  * @fileoverview cyanheads_search_catalog — semantic search across fleet tools and servers.
  * Embeds the query at runtime and dot-products against in-memory L2-normalized
- * document vectors loaded from fleet.json.
+ * document vectors loaded from fleet.json; with the query omitted, lists the
+ * catalog's entries in name order instead.
  * @module mcp-server/tools/definitions/search-catalog
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { markdown } from '@cyanheads/mcp-ts-core/utils';
+import { createCounter, markdown } from '@cyanheads/mcp-ts-core/utils';
+import { clampLimitsEnabled } from '@/config/server-config.js';
 import { getCatalogService } from '@/services/catalog/service-instance.js';
+import type { CatalogEntry, CatalogRecord } from '@/services/catalog/types.js';
 
 /**
  * Upper bound on the query string. A natural-language capability description
@@ -18,57 +21,97 @@ import { getCatalogService } from '@/services/catalog/service-instance.js';
  */
 const QUERY_MAX_LENGTH = 500;
 
-/** Most ranked results one call returns; a larger `limit` is served up to this and the rest named. */
-const RESULTS_PER_CALL = 20;
-
 /**
- * Hard ceiling on `limit`, set above the catalog's tool count so a "return everything"
- * request is served while garbage input like `1e6` is rejected. It bounds no cost:
- * the full match set is ranked before the page is sliced.
+ * Most results one call returns. It bounds response size, not work: the full
+ * match set is ranked in memory before the page is sliced, and a page this size
+ * of the heaviest tool rows stays under about 1 MB per surface.
  */
-const LIMIT_MAX = 1000;
+const LIMIT_CAP = 1000;
+
+/** Server roll-up rows per page. */
+const SERVERS_CAP = 10;
+
+/** The `limit` maximum: none while clamping, `LIMIT_CAP` when `CATALOG_CLAMP_LIMITS=false`. */
+const strictLimitMax = () => (clampLimitsEnabled() ? undefined : LIMIT_CAP);
+
+/** Calls whose `limit` exceeded `LIMIT_CAP` and were served at it. */
+const limitClamps = createCounter(
+  'mcp.input.count_clamped',
+  'Calls whose count input exceeded the per-call cap and were served at it',
+  '{calls}',
+);
+
+/** A blank from a form client is "unset", never a value to validate. */
+const blankAsUnset = (value: unknown) => (value === '' ? undefined : value);
 
 export const searchCatalogTool = tool('cyanheads_search_catalog', {
   title: 'Search Fleet Tools and Servers',
   description:
-    'Search fleet tools and servers by natural-language description. Returns ranked matches with ' +
-    'brief summaries and the server each tool belongs to. Use scope "servers" to find which ' +
-    'server handles a workflow; use the default scope "tools" to find specific tools.',
+    'Search fleet tools and servers by natural-language description. Returns ranked matches with the full catalog description of each entry and the server each tool belongs to. Omit query to list every tool or server in name order instead, optionally filtered by category. Use scope "servers" to find which server handles a workflow; use the default scope "tools" to find specific tools.',
   annotations: { readOnlyHint: true, openWorldHint: false },
   auth: ['tool:cyanheads_search_catalog:read'],
 
   input: z.object({
     query: z
-      .string()
-      .min(1)
-      .max(QUERY_MAX_LENGTH)
-      .regex(/\S/u, 'Query must contain a non-whitespace character.')
+      .preprocess(
+        blankAsUnset,
+        z
+          .string()
+          .min(1)
+          .max(QUERY_MAX_LENGTH)
+          .regex(/\S/u, 'Query must contain a non-whitespace character.')
+          .optional(),
+      )
       .describe(
-        'Natural language search query. Describe what you want to accomplish, a workflow, or a ' +
-          `capability area. 1-${QUERY_MAX_LENGTH} raw characters; surrounding whitespace is trimmed. Must contain non-whitespace text.`,
+        `Natural language search query. Describe what you want to accomplish, a workflow, or a capability area. 1-${QUERY_MAX_LENGTH} raw characters; surrounding whitespace is trimmed. Must contain non-whitespace text. Omit to list every entry in the scope in name order instead.`,
       ),
     scope: z
-      .enum(['tools', 'servers'])
-      .default('tools')
+      .preprocess(blankAsUnset, z.enum(['tools', 'servers']).default('tools'))
       .describe(
-        'What to search. "tools" returns individual tool matches; "servers" returns server-level matches.',
+        'What to search or list. "tools" returns individual tool matches; "servers" returns server-level matches.',
       ),
     category: z
       .preprocess(
-        (value) => (value === '' ? undefined : value),
+        blankAsUnset,
         z.enum(['research', 'government', 'public-data', 'utility']).optional(),
       )
       .describe(
-        'Filter by catalog category. Omit to search all categories. Categories are catalog labels, not publisher types (a federal agency API can be public-data), and a wrong guess silently drops the matching server, so set this only when the category is known.',
+        'Filter by catalog category. Omit to include all categories. Categories are catalog labels, not publisher types (a federal agency API can be public-data), and a wrong guess silently drops the matching server, so set this only when the category is known.',
       ),
+    /**
+     * `.int()` would advertise and enforce the safe-integer maximum, so a larger
+     * count could never reach the clamp. The whole-number check runs here with
+     * the issue `.int()` raises, and the cap is enforced only with clamping off;
+     * the getter advertises the same maximum the check enforces.
+     */
     limit: z
       .number()
-      .int()
       .min(1)
-      .max(LIMIT_MAX)
+      .check((ctx) => {
+        if (!Number.isInteger(ctx.value)) {
+          ctx.issues.push({ code: 'invalid_type', expected: 'int', input: ctx.value });
+          return;
+        }
+        const maximum = strictLimitMax();
+        if (maximum !== undefined && ctx.value > maximum) {
+          ctx.issues.push({
+            code: 'too_big',
+            origin: 'number',
+            maximum,
+            inclusive: true,
+            input: ctx.value,
+          });
+        }
+      })
       .default(5)
+      .meta({
+        type: 'integer',
+        get maximum() {
+          return strictLimitMax();
+        },
+      })
       .describe(
-        `Maximum number of results to return (1-${LIMIT_MAX}). Default 5. At most ${RESULTS_PER_CALL} per call: a larger limit returns up to ${RESULTS_PER_CALL}, with a notice naming the offset to continue from when more matches follow.`,
+        `Maximum number of results to return. Default 5; one call returns at most ${LIMIT_CAP}, with a notice naming the offset to continue from when more matches follow.`,
       ),
     offset: z
       .number()
@@ -84,7 +127,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       .min(0)
       .default(0)
       .describe(
-        'Independent server roll-up offset (10 per page). Use nextServersOffset; must be zero in servers scope.',
+        'Independent server roll-up offset (10 per page). Use nextServersOffset; must be zero in servers scope and when query is omitted.',
       ),
   }),
 
@@ -97,12 +140,12 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
     serversOffset: z
       .number()
       .optional()
-      .describe('Current server roll-up offset; tools scope only.'),
+      .describe('Current server roll-up offset; tools-scope searches only.'),
     nextServersOffset: z
       .number()
       .nullable()
       .optional()
-      .describe('Next server roll-up offset, or null when exhausted; tools scope only.'),
+      .describe('Next server roll-up offset, or null when exhausted; tools-scope searches only.'),
     results: z
       .array(
         z
@@ -115,19 +158,26 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
               .describe(
                 'Server package name that owns this tool (e.g. "arxiv-mcp-server"). Same as name when scope is "servers". Pass name and server to cyanheads_describe_entry to describe exactly this row.',
               ),
-            brief: z.string().describe('One-line summary of what this tool or server does.'),
+            brief: z
+              .string()
+              .describe(
+                "The tool's full catalog description, or the server's description in servers scope.",
+              ),
             category: z
               .enum(['research', 'government', 'public-data', 'utility'])
               .describe('Catalog category for the owning server.'),
             score: z
               .number()
+              .optional()
               .describe(
-                'Cosine similarity between query and entry, in [0, 1]. Higher is better. Compare only within a single response.',
+                'Cosine similarity between query and entry, in [0, 1]. Higher is better. Compare only within a single response. Absent when query is omitted.',
               ),
           })
           .describe('A single search result entry.'),
       )
-      .describe('Ranked matches, best first.'),
+      .describe(
+        'Ranked matches, best first; with query omitted, every listed entry in name order.',
+      ),
     scope: z.enum(['tools', 'servers']).describe('Scope that was searched.'),
     servers: z
       .array(
@@ -151,7 +201,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       )
       .optional()
       .describe(
-        'Server roll-up from the full match set, independent of result offset/limit. Tools scope only. Ordered by topScore desc (name-tiebroken); 10 per page starting at serversOffset. Use nextServersOffset to continue and serversTotal for the full distinct count.',
+        'Server roll-up from the full match set, independent of result offset/limit. Tools-scope searches only. Ordered by topScore desc (name-tiebroken); 10 per page starting at serversOffset. Use nextServersOffset to continue and serversTotal for the full distinct count.',
       ),
     serversTotal: z
       .number()
@@ -164,13 +214,20 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
   // Agent-facing search context — query echo, total count, empty-result guidance.
   // Reaches both structuredContent and content[] trailer; never in the domain return.
   enrichment: {
-    effectiveQuery: z.string().describe('The query that was searched.'),
-    totalCount: z.number().describe('Total relevant matches before the limit was applied.'),
+    effectiveQuery: z
+      .string()
+      .optional()
+      .describe('The query that was searched. Absent when query is omitted.'),
+    totalCount: z
+      .number()
+      .describe(
+        'Total relevant matches, or listed entries when query is omitted, before the limit was applied.',
+      ),
     truncated: z
       .boolean()
       .optional()
       .describe(
-        `True when limit exceeded the ${RESULTS_PER_CALL}-per-call cap and more matches follow this page.`,
+        `True when limit exceeded the ${LIMIT_CAP}-per-call cap and more matches follow this page.`,
       ),
     shown: z.number().optional().describe('Results returned on this capped page.'),
     cap: z.number().optional().describe('Per-call result cap that was applied.'),
@@ -178,7 +235,7 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       .string()
       .optional()
       .describe(
-        `Guidance for zero matches, an exhausted result page, or a page cut to the ${RESULTS_PER_CALL}-per-call cap with more matches following (names the offset to continue from). Absent otherwise.`,
+        `Guidance for zero matches, an exhausted result page, or a page cut to the ${LIMIT_CAP}-per-call cap with more matches following (names the offset to continue from). Absent otherwise.`,
       ),
   },
 
@@ -186,8 +243,9 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
     {
       reason: 'invalid_servers_offset',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'A nonzero serversOffset is supplied in servers scope.',
-      recovery: 'Set serversOffset to zero in servers scope; use offset to page server results.',
+      when: 'A nonzero serversOffset is supplied in servers scope or with query omitted.',
+      recovery:
+        'Set serversOffset to zero in servers scope and when query is omitted; use offset to page results.',
     },
     {
       reason: 'catalog_empty',
@@ -203,32 +261,55 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
   ],
 
   async handler(input, ctx) {
-    if (input.scope === 'servers' && input.serversOffset !== 0) {
+    const query = input.query?.trim();
+    // A listing has no roll-up to page, exactly like servers scope.
+    if (input.serversOffset !== 0 && (input.scope === 'servers' || query === undefined)) {
       throw ctx.fail('invalid_servers_offset');
     }
-    const query = input.query.trim();
+    const servedLimit = Math.min(input.limit, LIMIT_CAP);
     ctx.log.info('Searching catalog', {
       query,
       scope: input.scope,
       limit: input.limit,
+      servedLimit,
     });
+    if (servedLimit < input.limit) {
+      limitClamps.add(1, {
+        'mcp.tool.name': 'cyanheads_search_catalog',
+        'mcp.input.field': 'limit',
+      });
+    }
 
     const catalog = getCatalogService();
+    const filter = { scope: input.scope, ...(input.category ? { category: input.category } : {}) };
+    const ranked = query === undefined ? undefined : await catalog.search({ query, ...filter });
+    const matches: readonly (CatalogEntry & { score?: number })[] = ranked ?? catalog.list(filter);
+    const totalMatched = matches.length;
 
-    const allResults = await catalog.search({
-      query,
-      scope: input.scope,
-      ...(input.category ? { category: input.category } : {}),
-    });
-
-    const totalMatched = allResults.length;
-
-    ctx.enrich.echo(query);
+    if (query !== undefined) ctx.enrich.echo(query);
     ctx.enrich.total(totalMatched);
 
-    if (totalMatched === 0) {
+    /**
+     * `ctx.enrich.notice()` is last-wins. These notices and the truncation
+     * guidance below are exclusive: a cut page has a next offset, so it has
+     * rows, and a page with rows is neither empty nor past the end.
+     */
+    const otherScope = input.scope === 'tools' ? 'servers' : 'tools';
+    if (totalMatched === 0 && query === undefined) {
+      /**
+       * An empty listing means the filter selects nothing. With a category, the
+       * other scope lists something only when that category's servers expose no
+       * tools; a category with no servers is empty in both scopes.
+       */
+      const listHint = input.category
+        ? `Remove the category filter${catalog.list({ ...filter, scope: otherScope }).length ? ` or switch to scope "${otherScope}"` : ''}.`
+        : `Switch to scope "${otherScope}".`;
       ctx.enrich.notice(
-        `No ${input.scope} matched. Try broadening the query${input.category ? ', removing the category filter,' : ''} or switching to scope "${input.scope === 'tools' ? 'servers' : 'tools'}".`,
+        `No ${input.scope} ${input.category ? `in category "${input.category}"` : 'in the catalog'}. ${listHint}`,
+      );
+    } else if (totalMatched === 0) {
+      ctx.enrich.notice(
+        `No ${input.scope} matched. Try broadening the query${input.category ? ', removing the category filter,' : ''} or switching to scope "${otherScope}".`,
       );
     } else if (input.offset >= totalMatched) {
       ctx.enrich.notice(
@@ -236,67 +317,74 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       );
     }
 
-    const results = allResults.slice(
-      input.offset,
-      input.offset + Math.min(input.limit, RESULTS_PER_CALL),
-    );
+    const results = matches
+      .slice(input.offset, input.offset + servedLimit)
+      .map(({ name, server, brief, category, score }) => ({
+        name,
+        server,
+        brief,
+        category,
+        ...(score === undefined ? {} : { score }),
+      }));
     const nextOffset =
       input.offset + results.length < totalMatched ? input.offset + results.length : null;
     const page = { results, scope: input.scope, offset: input.offset, nextOffset };
 
-    if (input.limit > RESULTS_PER_CALL && nextOffset !== null) {
+    if (input.limit > LIMIT_CAP && nextOffset !== null) {
       const remaining = totalMatched - nextOffset;
       ctx.enrich.truncated({
         shown: results.length,
-        cap: RESULTS_PER_CALL,
-        guidance: `limit ${input.limit} exceeds the per-call cap of ${RESULTS_PER_CALL}; ${remaining} more ${remaining === 1 ? 'result follows' : 'results follow'}. Continue with offset ${nextOffset}.`,
+        cap: LIMIT_CAP,
+        guidance: `limit ${input.limit} exceeds the per-call cap of ${LIMIT_CAP}; ${remaining} more ${remaining === 1 ? 'result follows' : 'results follow'}. Continue with offset ${nextOffset}.`,
       });
     }
 
     ctx.log.info('Search complete', { totalMatched, returned: results.length });
 
-    if (input.scope === 'tools') {
-      // Build server roll-up from the full match set (before limit slice)
-      const SERVERS_CAP = 10;
-      const serverMap = new Map<string, { matchedTools: number; topScore: number }>();
-      for (const r of allResults) {
-        const existing = serverMap.get(r.server);
-        if (existing) {
-          existing.matchedTools++;
-          if (r.score > existing.topScore) existing.topScore = r.score;
-        } else {
-          serverMap.set(r.server, { matchedTools: 1, topScore: r.score });
-        }
+    if (ranked === undefined || input.scope === 'servers') return page;
+
+    /**
+     * Server roll-up from the full match set (before the page slice). Each
+     * server's description and category come from the record that scored its
+     * rows: a refresh during the query embedding can swap the catalog, and the
+     * live one may no longer hold that server.
+     */
+    const serverMap = new Map<
+      string,
+      { record: CatalogRecord; matchedTools: number; topScore: number }
+    >();
+    for (const r of ranked) {
+      const existing = serverMap.get(r.server);
+      if (existing) {
+        existing.matchedTools++;
+        if (r.score > existing.topScore) existing.topScore = r.score;
+      } else {
+        serverMap.set(r.server, { record: r.serverRecord, matchedTools: 1, topScore: r.score });
       }
-
-      const serversTotal = serverMap.size;
-      const servers = Array.from(serverMap.entries())
-        .sort(([nameA, a], [nameB, b]) => b.topScore - a.topScore || nameA.localeCompare(nameB))
-        .slice(input.serversOffset, input.serversOffset + SERVERS_CAP)
-        .map(([name, agg]) => {
-          const record = catalog.getServer(name);
-          return {
-            name,
-            brief: record?.description ?? '',
-            category: record?.category ?? ('utility' as const),
-            matchedTools: agg.matchedTools,
-            topScore: agg.topScore,
-          };
-        });
-
-      return {
-        ...page,
-        servers,
-        serversTotal,
-        serversOffset: input.serversOffset,
-        nextServersOffset:
-          input.serversOffset + servers.length < serversTotal
-            ? input.serversOffset + servers.length
-            : null,
-      };
     }
 
-    return page;
+    const serversTotal = serverMap.size;
+    const servers = Array.from(serverMap.entries())
+      .sort(([nameA, a], [nameB, b]) => b.topScore - a.topScore || nameA.localeCompare(nameB))
+      .slice(input.serversOffset, input.serversOffset + SERVERS_CAP)
+      .map(([name, agg]) => ({
+        name,
+        brief: agg.record.description,
+        category: agg.record.category,
+        matchedTools: agg.matchedTools,
+        topScore: agg.topScore,
+      }));
+
+    return {
+      ...page,
+      servers,
+      serversTotal,
+      serversOffset: input.serversOffset,
+      nextServersOffset:
+        input.serversOffset + servers.length < serversTotal
+          ? input.serversOffset + servers.length
+          : null,
+    };
   },
 
   format: (result) => {
@@ -314,10 +402,9 @@ export const searchCatalogTool = tool('cyanheads_search_catalog', {
       lines.push(result.offset > 0 ? 'No results on this page.' : 'No results matched.');
     } else {
       for (const item of result.results) {
+        const score = item.score === undefined ? '' : `  |  **Score:** ${item.score.toFixed(3)}`;
         lines.push(`### ${label(item.name)}`);
-        lines.push(
-          `**Server:** ${label(item.server)}\n\n**Category:** ${item.category}  |  **Score:** ${item.score.toFixed(3)}`,
-        );
+        lines.push(`**Server:** ${label(item.server)}\n\n**Category:** ${item.category}${score}`);
         lines.push(markdown().codeBlock(item.brief).build());
         lines.push('');
       }

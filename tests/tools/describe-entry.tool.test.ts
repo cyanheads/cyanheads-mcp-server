@@ -436,23 +436,37 @@ describe('cyanheads_describe_entry', () => {
     });
   });
 
-  it('throws not_found when kind="tool" but the name only matches a server', async () => {
-    const ctx = createMockContext({ errors: describeEntryTool.errors });
-    const input = describeEntryTool.input.parse({ name: 'earthquake-mcp-server', kind: 'tool' });
-
-    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'not_found' },
-    });
-  });
-
-  it('throws not_found when kind="server" but the name only matches a tool', async () => {
-    const ctx = createMockContext({ errors: describeEntryTool.errors });
-    const input = describeEntryTool.input.parse({ name: 'earthquake_search', kind: 'server' });
-
-    await expect(describeEntryTool.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'not_found' },
-    });
-  });
+  it.each([
+    {
+      input: { name: 'earthquake-mcp-server', kind: 'tool' as const },
+      message:
+        'No tool named "earthquake-mcp-server" in the catalog; it matches server "earthquake-mcp-server".',
+      hint: 'Set kind to "server" and call cyanheads_describe_entry again.',
+    },
+    {
+      input: { name: 'earthquake_search', kind: 'server' as const },
+      message:
+        'No server named "earthquake_search" in the catalog; it matches tool "earthquake_search".',
+      hint: 'Set kind to "tool" and call cyanheads_describe_entry again.',
+    },
+  ])(
+    'fails not_found for kind $input.kind naming the other-kind match and the kind to set',
+    async ({ input, message, hint }) => {
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          message,
+          data: { reason: 'not_found', name: input.name, recovery: { hint } },
+        },
+      });
+      const text = result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+      expect(text.split('\n')).toEqual(
+        expect.arrayContaining([`Error: ${message}`, `Recovery: ${hint}`]),
+      );
+    },
+  );
 
   it('throws not_found when the name contains neither hyphen nor underscore and no kind is given', async () => {
     const ctx = createMockContext({ errors: describeEntryTool.errors });
@@ -906,24 +920,47 @@ describe('cyanheads_describe_entry — tool names owned by several servers', () 
     });
   });
 
+  /**
+   * `searched` is the kind set or auto-detected. The other kind's lookup applies
+   * the same server, which excludes each of these names too, so the message stays
+   * plain and the declared recovery stands.
+   */
   it.each([
-    { name: 'earthquake_search', server: 'nonexistent-mcp-server' },
-    { name: 'wikipedia_search', server: 'earthquake-mcp-server' },
-    { name: 'wikipedia_search', server: 'earthquake-mcp-server', kind: 'tool' as const },
-    { name: 'earthquake-mcp-server', server: 'wikipedia-mcp-server' },
-    { name: 'earthquake-mcp-server', server: 'wikipedia-mcp-server', kind: 'server' as const },
-    { name: 'cyanheads_search_catalog', server: 'earthquake-mcp-server' },
-  ])('returns not_found for $name under server $server (kind $kind)', async (input) => {
-    await load(ORDERS.later);
-    const result = await runToolContract(describeEntryTool, input);
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      error: { code: JsonRpcErrorCode.NotFound, data: { reason: 'not_found' } },
-    });
-    expect(text(result)).toContain(
-      `No tool or server named "${input.name}" under server "${input.server}" in the catalog`,
-    );
-  });
+    { name: 'earthquake_search', server: 'nonexistent-mcp-server', searched: 'tool' },
+    { name: 'wikipedia_search', server: 'earthquake-mcp-server', searched: 'tool' },
+    {
+      name: 'wikipedia_search',
+      server: 'earthquake-mcp-server',
+      kind: 'tool' as const,
+      searched: 'tool',
+    },
+    { name: 'earthquake-mcp-server', server: 'wikipedia-mcp-server', searched: 'server' },
+    {
+      name: 'earthquake-mcp-server',
+      server: 'wikipedia-mcp-server',
+      kind: 'server' as const,
+      searched: 'server',
+    },
+    { name: 'cyanheads_search_catalog', server: 'earthquake-mcp-server', searched: 'tool' },
+  ])(
+    'returns not_found for $name under server $server (kind $kind)',
+    async ({ searched, ...input }) => {
+      await load(ORDERS.later);
+      const declared = describeEntryTool.errors!.find((e) => e.reason === 'not_found')!;
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          message: `No ${searched} named "${input.name}" under server "${input.server}" in the catalog`,
+          data: { reason: 'not_found', recovery: { hint: declared.recovery } },
+        },
+      });
+      expect(text(result)).toContain(
+        `No ${searched} named "${input.name}" under server "${input.server}" in the catalog`,
+      );
+    },
+  );
 
   it('describes a server when server names the same server', async () => {
     await load(ORDERS.later);
@@ -956,6 +993,395 @@ describe('cyanheads_describe_entry — tool names owned by several servers', () 
     });
     expect(self.structuredContent).toMatchObject({
       result: { server: 'cyanheads-mcp-server', description: describeEntryTool.description },
+    });
+  });
+});
+
+describe('cyanheads_describe_entry — wrong-kind names and server stems', () => {
+  const [quake, wiki, mailchimp] = FLEET_PAYLOAD.servers as [
+    CatalogRecord,
+    CatalogRecord,
+    CatalogRecord,
+  ];
+  const declared = describeEntryTool.errors!.find((e) => e.reason === 'not_found')!;
+  const text = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+  /** A tool-less server under an arbitrary name, owning the given tools. */
+  const named = (name: string, tools: string[] = []): CatalogRecord => ({
+    ...mailchimp,
+    name,
+    npm: `@cyanheads/${name}`,
+    tools: tools.map((t) => ({ name: t, description: `Tool ${t}.`, embedding: E1 })),
+  });
+
+  function load(servers: CatalogRecord[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ ...FLEET_PAYLOAD, servers } satisfies FleetPayload),
+      }),
+    );
+    initCatalogService(TEST_CONFIG, makeMockEmbeddings());
+    return getCatalogService().initialize();
+  }
+
+  afterEach(() => {
+    resetCatalogServiceForTests();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Each row misses in the kind set or auto-detected; the other kind's lookup,
+   * with the same name and server, finds `match`. A hyphenated tool name is
+   * schema-valid and auto-detects as a server.
+   */
+  it.each([
+    {
+      input: { name: 'EARTHQUAKE-MCP-SERVER', kind: 'tool' as const },
+      other: 'server' as const,
+      match: 'earthquake-mcp-server',
+      message:
+        'No tool named "EARTHQUAKE-MCP-SERVER" in the catalog; it matches server "earthquake-mcp-server".',
+    },
+    {
+      input: { name: 'earthquake', kind: 'tool' as const },
+      other: 'server' as const,
+      match: 'earthquake-mcp-server',
+      message:
+        'No tool named "earthquake" in the catalog; it matches server "earthquake-mcp-server".',
+    },
+    {
+      input: { name: 'cyanheads', kind: 'tool' as const },
+      other: 'server' as const,
+      match: 'cyanheads-mcp-server',
+      message:
+        'No tool named "cyanheads" in the catalog; it matches server "cyanheads-mcp-server".',
+    },
+    {
+      input: { name: 'Earthquake_Search', kind: 'server' as const },
+      other: 'tool' as const,
+      match: 'earthquake_search',
+      message:
+        'No server named "Earthquake_Search" in the catalog; it matches tool "earthquake_search".',
+    },
+    {
+      input: { name: 'cyanheads_search_catalog', kind: 'server' as const },
+      other: 'tool' as const,
+      match: 'cyanheads_search_catalog',
+      message:
+        'No server named "cyanheads_search_catalog" in the catalog; it matches tool "cyanheads_search_catalog".',
+    },
+    {
+      input: { name: 'earthquake-mcp-server', kind: 'tool' as const, server: 'earthquake' },
+      other: 'server' as const,
+      match: 'earthquake-mcp-server',
+      message:
+        'No tool named "earthquake-mcp-server" under server "earthquake" in the catalog; it matches server "earthquake-mcp-server".',
+    },
+    {
+      input: { name: 'earthquake_search', kind: 'server' as const, server: 'Earthquake' },
+      other: 'tool' as const,
+      match: 'earthquake_search',
+      message:
+        'No server named "earthquake_search" under server "Earthquake" in the catalog; it matches tool "earthquake_search".',
+    },
+    {
+      input: { name: 'wiki-lookup' },
+      other: 'tool' as const,
+      match: 'wiki-lookup',
+      message: 'No server named "wiki-lookup" in the catalog; it matches tool "wiki-lookup".',
+    },
+  ])(
+    'names the $other match for $input.name and the kind that finds it',
+    async ({ input, other, match, message }) => {
+      await load([
+        quake,
+        {
+          ...wiki,
+          tools: [
+            ...wiki.tools,
+            { name: 'wiki-lookup', description: 'Hyphenated.', embedding: E1 },
+          ],
+        },
+      ]);
+      const hint = `Set kind to "${other}" and call cyanheads_describe_entry again.`;
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          message,
+          data: {
+            reason: 'not_found',
+            name: input.name,
+            ...('server' in input ? { server: input.server } : {}),
+            recovery: { hint },
+          },
+        },
+      });
+      expect(text(result).split('\n')).toEqual(
+        expect.arrayContaining([`Error: ${message}`, `Recovery: ${hint}`]),
+      );
+
+      // The call the hint asks for — same name and server, the other kind — resolves the match.
+      const corrected = await runToolContract(describeEntryTool, { ...input, kind: other });
+      expect(corrected.isError).not.toBe(true);
+      expect(corrected.structuredContent).toMatchObject({ result: { kind: other, name: match } });
+    },
+  );
+
+  /**
+   * The other kind finds nothing here: no entry, a match the server input
+   * excludes, or a case-insensitive name with several spellings or owners.
+   */
+  it.each([
+    {
+      input: { name: 'nonexistent-mcp-server', kind: 'server' as const },
+      message: 'No server named "nonexistent-mcp-server" in the catalog',
+    },
+    {
+      input: { name: 'nonexistent_tool' },
+      message: 'No tool named "nonexistent_tool" in the catalog',
+    },
+    {
+      input: { name: 'unstructuredname' },
+      message: 'No tool or server named "unstructuredname" in the catalog',
+    },
+    {
+      input: { name: 'earthquake-mcp-server', kind: 'tool' as const, server: 'wikipedia' },
+      message: 'No tool named "earthquake-mcp-server" under server "wikipedia" in the catalog',
+    },
+    {
+      input: { name: 'wikipedia_search', kind: 'server' as const, server: 'earthquake' },
+      message: 'No server named "wikipedia_search" under server "earthquake" in the catalog',
+    },
+    {
+      input: { name: 'Earthquake_Search', kind: 'server' as const },
+      message: 'No server named "Earthquake_Search" in the catalog',
+    },
+    {
+      input: { name: 'dup-mcp-server', kind: 'tool' as const },
+      message: 'No tool named "dup-mcp-server" in the catalog',
+    },
+  ])(
+    'keeps the plain message and declared recovery for $input.name (kind $input.kind, server $input.server)',
+    async ({ input, message }) => {
+      await load([
+        quake,
+        { ...wiki, tools: [...wiki.tools, { ...quake.tools[0]!, name: 'EARTHQUAKE_SEARCH' }] },
+        named('Dup-mcp-server'),
+        named('DUP-MCP-SERVER'),
+      ]);
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          message,
+          data: {
+            reason: 'not_found',
+            name: input.name,
+            ...('server' in input ? { server: input.server } : {}),
+            recovery: { hint: declared.recovery },
+          },
+        },
+      });
+      expect(text(result).split('\n')).toEqual(
+        expect.arrayContaining([`Error: ${message}`, `Recovery: ${declared.recovery}`]),
+      );
+    },
+  );
+
+  it.each([
+    { name: 'earthquake', expected: 'earthquake-mcp-server' },
+    { name: 'Earthquake', kind: 'server' as const, expected: 'earthquake-mcp-server' },
+    { name: 'EARTHQUAKE', expected: 'earthquake-mcp-server' },
+    { name: 'usgs-water', expected: 'usgs-water-mcp-server' },
+    { name: 'USGS-Water', kind: 'server' as const, expected: 'usgs-water-mcp-server' },
+    { name: 'noaa-climate', expected: 'noaa-climate-mcp-server' },
+    { name: 'cyanheads', expected: 'cyanheads-mcp-server' },
+  ])(
+    'describes the server stem $name (kind $kind) as $expected',
+    async ({ expected, ...input }) => {
+      await load([
+        quake,
+        named('usgs-water-mcp-server', ['water_get_conditions']),
+        named('noaa-climate-mcp-server'),
+        named('noaa-marine-mcp-server'),
+      ]);
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        result: { kind: 'server', name: expected },
+      });
+      expect(text(result)).toContain(`# Server: \`${expected}\``);
+    },
+  );
+
+  it('resolves a stem in server for a tool or the same server', async () => {
+    await load([quake, named('usgs-water-mcp-server', ['water_get_conditions'])]);
+    for (const [input, expected] of [
+      [
+        { name: 'water_get_conditions', server: 'usgs-water' },
+        { kind: 'tool', name: 'water_get_conditions', server: 'usgs-water-mcp-server' },
+      ],
+      [
+        { name: 'usgs-water-mcp-server', server: 'usgs-water' },
+        { kind: 'server', name: 'usgs-water-mcp-server' },
+      ],
+      [
+        { name: 'usgs-water', server: 'USGS-WATER-MCP-SERVER' },
+        { kind: 'server', name: 'usgs-water-mcp-server' },
+      ],
+      [
+        { name: 'cyanheads_describe_entry', server: 'cyanheads' },
+        { kind: 'tool', name: 'cyanheads_describe_entry', server: 'cyanheads-mcp-server' },
+      ],
+    ] as const) {
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ result: expected });
+    }
+  });
+
+  it('returns not_found for a prefix several servers share', async () => {
+    await load([quake, named('noaa-climate-mcp-server'), named('noaa-marine-mcp-server')]);
+    const result = await runToolContract(describeEntryTool, { name: 'noaa' });
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.NotFound,
+        message: 'No tool or server named "noaa" in the catalog',
+        data: { reason: 'not_found', recovery: { hint: declared.recovery } },
+      },
+    });
+  });
+
+  /** A stem is exactly `<name>-mcp-server`: a prefix one server alone starts with is not one. */
+  it.each([
+    { input: { name: 'usgs' }, message: 'No tool or server named "usgs" in the catalog' },
+    {
+      input: { name: 'water_get_conditions', server: 'usgs' },
+      message: 'No tool named "water_get_conditions" under server "usgs" in the catalog',
+    },
+  ])(
+    'returns not_found on both surfaces for $input.name (server $input.server), a prefix only one server starts with',
+    async ({ input, message }) => {
+      await load([quake, named('usgs-water-mcp-server', ['water_get_conditions'])]);
+      const result = await runToolContract(describeEntryTool, input);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: JsonRpcErrorCode.NotFound,
+          message,
+          data: { reason: 'not_found', ...input, recovery: { hint: declared.recovery } },
+        },
+      });
+      expect(text(result).split('\n')).toEqual(
+        expect.arrayContaining([`Error: ${message}`, `Recovery: ${declared.recovery}`]),
+      );
+    },
+  );
+
+  it('refuses a name that resolves as a tool and, through its stem, as a server', async () => {
+    await load([quake, named('owner-mcp-server', ['alpha']), named('alpha-mcp-server')]);
+    const refused = await runToolContract(describeEntryTool, { name: 'alpha' });
+    expect(refused.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.ValidationError, data: { reason: 'ambiguous_kind' } },
+    });
+    expect(text(refused)).toContain('"alpha" matches both a tool and a server');
+    for (const [kind, expected] of [
+      ['tool', { kind: 'tool', name: 'alpha', server: 'owner-mcp-server' }],
+      ['server', { kind: 'server', name: 'alpha-mcp-server' }],
+    ] as const) {
+      const result = await runToolContract(describeEntryTool, { name: 'alpha', kind });
+      expect(result.structuredContent).toMatchObject({ result: expected });
+    }
+  });
+});
+
+describe('cyanheads_describe_entry — composesWith', () => {
+  const [quake, wiki, mailchimp] = FLEET_PAYLOAD.servers as [
+    CatalogRecord,
+    CatalogRecord,
+    CatalogRecord,
+  ];
+  /** Published order, unsorted, with one entry that names no catalog server. */
+  const COMPOSES = ['wikipedia-mcp-server', 'not-in-catalog-mcp-server', 'mailchimp-mcp-server'];
+  const text = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+    result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+
+  beforeEach(async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () =>
+          Promise.resolve({
+            ...FLEET_PAYLOAD,
+            servers: [
+              { ...quake, composesWith: COMPOSES },
+              wiki,
+              { ...mailchimp, composesWith: [] },
+            ],
+          } satisfies FleetPayload),
+      }),
+    );
+    initCatalogService(TEST_CONFIG, makeMockEmbeddings());
+    await getCatalogService().initialize();
+  });
+
+  afterEach(() => {
+    resetCatalogServiceForTests();
+    vi.restoreAllMocks();
+  });
+
+  it.each(['earthquake-mcp-server', 'earthquake_search'])(
+    'returns the owner’s list in published order for %s on both surfaces',
+    async (name) => {
+      const result = await runToolContract(describeEntryTool, { name });
+      expect(result.isError).not.toBe(true);
+      const parsed = describeEntryTool.output.parse(result.structuredContent).result;
+      expect(parsed.composesWith).toEqual(COMPOSES);
+      const rendered = text(result);
+      expect(rendered).toContain(
+        [
+          '## Composes with',
+          '',
+          '- `wikipedia-mcp-server`',
+          '- `not-in-catalog-mcp-server`',
+          '- `mailchimp-mcp-server`',
+          '',
+          'Describe any of these with cyanheads_describe_entry.',
+        ].join('\n'),
+      );
+      const at = rendered.indexOf('## Composes with');
+      expect(rendered.indexOf('## Description')).toBeLessThan(at);
+      expect(at).toBeLessThan(rendered.indexOf(parsed.kind === 'server' ? '## Tools' : '## Local'));
+    },
+  );
+
+  it.each([
+    'wikipedia-mcp-server',
+    'wikipedia_search',
+    'mailchimp-mcp-server',
+    'mailchimp_list_audiences',
+    'cyanheads-mcp-server',
+    'cyanheads_describe_entry',
+  ])('omits composesWith and its section for %s, whose owner lists none', async (name) => {
+    const result = await runToolContract(describeEntryTool, { name });
+    expect(result.isError).not.toBe(true);
+    expect(describeEntryTool.output.parse(result.structuredContent).result).not.toHaveProperty(
+      'composesWith',
+    );
+    expect(text(result)).not.toContain('Composes with');
+  });
+
+  it('describing an entry that names no catalog server answers not_found', async () => {
+    const result = await runToolContract(describeEntryTool, { name: 'not-in-catalog-mcp-server' });
+    expect(result.structuredContent).toMatchObject({
+      error: { code: JsonRpcErrorCode.NotFound, data: { reason: 'not_found' } },
     });
   });
 });

@@ -2,8 +2,8 @@
 
 **Server:** cyanheads-mcp-server
 **Version:** 0.5.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` 2.4.0
 **Zod:** ^4.6.7
 
@@ -15,12 +15,12 @@
 
 A fleet discovery surface for the cyanheads MCP ecosystem. Two tools:
 
-- **`cyanheads_search_catalog`** — semantic search across fleet tools and servers using cosine similarity over Matryoshka-truncated 256-dim embeddings from `Snowflake/snowflake-arctic-embed-m-v1.5`.
-- **`cyanheads_describe_entry`** — returns the description, connection URL, and per-client install snippet for any named tool or server.
+- **`cyanheads_search_catalog`** — semantic search across fleet tools and servers using cosine similarity over Matryoshka-truncated 256-dim embeddings from `Snowflake/snowflake-arctic-embed-m-v1.5`. With `query` omitted it lists every entry in the scope in name order instead (no embedding, floor, or score). One call returns at most 1000 results; `CATALOG_CLAMP_LIMITS=false` rejects a larger `limit` instead of serving the cap.
+- **`cyanheads_describe_entry`** — returns the description, connection URL, and per-client install snippet for any named tool or server; a server stem (`pubmed`) resolves like its full name, and `composesWith` lists the servers the maintainer says compose with it.
 
 The catalog (`fleet.json`) is produced by `caseyjhand-portfolio/scripts/build-fleet-json.ts` at portfolio deploy time. Document vectors are baked into the JSON. The server only embeds the user's query at runtime via `@huggingface/transformers`. See `docs/design.md` for the full architecture.
 
-The generated catalog does not include this server, so `src/services/catalog/self-record.ts` supplies a static `CatalogRecord` for `cyanheads-mcp-server` that `CatalogService.getServer()` / `getTool()` consult **only after** the remote namespace has no candidate — or, for `getTool()` scoped to `server: "cyanheads-mcp-server"`, when that server's remote entry lacks the tool. Exact remote names win, then unique case-insensitive remote names; ambiguous folds never fall through to self. Output names are canonical. The self record is never part of the vector index, so semantic search does not surface it — only name resolution does.
+The generated catalog does not include this server, so `src/services/catalog/self-record.ts` supplies a static `CatalogRecord` for `cyanheads-mcp-server` that `CatalogService.getServer()` / `getTool()` consult **only after** the remote namespace has no candidate — or, for `getTool()` scoped to `server: "cyanheads-mcp-server"`, when that server's remote entry lacks the tool. Exact remote names win, then unique case-insensitive remote names; ambiguous folds never fall through to self. A name with no candidate is retried once as `<name>-mcp-server`, so a server stem resolves (`pubmed`, and `cyanheads` for self). Output names are canonical. The self record is never part of the vector index, so semantic search does not surface it — only name resolution does.
 
 ---
 
@@ -369,7 +369,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 ## Bundling
 
-`bun run bundle` builds a stdio `.mcpb` for Claude Desktop through `scripts/bundle-portable.ts`. It stages the native build, substitutes `scripts/portable-transformers.mjs` with bundled Transformers JS and local ONNX WASM assets, then runs the official pack and `scripts/clean-mcpb.ts`. Only the staged import and dependency manifest change; npm and Docker retain native CPU inference. The cleaned bundle must contain no native libraries, dependency-shipped agent docs, node-gyp output, or the framework's build-only files. The agent-doc matcher (`AGENT_DOC_ENTRY`, kept identical in `scripts/clean-mcpb.ts` and `scripts/lint-packaging.ts` and pinned by `tests/scripts/bundle-agent-docs.test.ts`) strips agent directories only at a package root: the MCP SDK's `dist/ext/skills/` is runtime code, and a bundle without it fails at boot. `.mcpbignore` lines are root-anchored (`/docs/`, never `docs/`); `lint:packaging` names any missing or unanchored line. Transformers is pinned to 4.3.1 because the adapter uses its internal ONNX injection point. Keep fp32 inference, CLS pooling, catalog query prefix, truncation, and normalization aligned with the native path; verify an unpacked bundle with Node `--no-addons`, a real search, and a cached restart after packaging changes. Model downloads use the configured filesystem cache. Retain the bundled Transformers and ONNX license files.
+`bun run bundle` builds a stdio `.mcpb` for Claude Desktop through `scripts/bundle-portable.ts`. It stages the native build, substitutes `scripts/portable-transformers.mjs` with bundled Transformers JS and local ONNX WASM assets, then runs the official pack and `scripts/clean-mcpb.ts`. Only the staged import and dependency manifest change; npm and Docker retain native CPU inference. The cleaned bundle must contain no native libraries, dependency-shipped agent docs, node-gyp output, or the framework's build-only files. The agent-doc matcher (`AGENT_DOC_ENTRY`, kept identical in `scripts/clean-mcpb.ts` and `scripts/lint-packaging.ts` and pinned by `tests/scripts/bundle-agent-docs.test.ts`) strips agent directories and `AGENTS.md`/`CLAUDE.md` only at a package root, and `SKILL.md` anywhere: the MCP SDK's `dist/ext/skills/` is runtime code, and a bundle without it fails at boot. `.mcpbignore` lines are root-anchored (`/docs/`, never `docs/`); `lint:packaging` names any missing or unanchored line. Transformers is pinned to 4.3.1 because the adapter uses its internal ONNX injection point. Keep fp32 inference, CLS pooling, catalog query prefix, truncation, and normalization aligned with the native path; verify an unpacked bundle with Node `--no-addons`, a real search, and a cached restart after packaging changes. Model downloads use the configured filesystem cache. Retain the bundled Transformers and ONNX license files.
 
 **Adding an env var requires both files:** `server.json` (registry discovery, `environmentVariables[]`) and `manifest.json` (bundle install UX, `mcp_config.env` + `user_config`). `lint:packaging` (run by `devcheck`) verifies the env var names match, that every `user_config` option is wired into `mcp_config.env` as `"X": "${user_config.X}"` (the host substitutes nothing else — `"${X}"` reaches the server as that literal string), and that an optional string option carries `"default": ""`.
 

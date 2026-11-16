@@ -35,7 +35,7 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 
 | Tool | Description |
 |:---|:---|
-| `cyanheads_search_catalog` | Search fleet tools and servers by natural-language query. Returns ranked matches with brief summaries and the owning server. |
+| `cyanheads_search_catalog` | Search fleet tools and servers by natural-language query, or list them all by omitting the query. Returns matches with full catalog descriptions and the owning server. |
 | `cyanheads_describe_entry` | Return the description, connection URL, and per-client install snippet for a named tool or server. |
 
 ### Skills
@@ -48,22 +48,22 @@ Find the right MCP tool for the job across the cyanheads fleet. Describe a task 
 
 ### `cyanheads_search_catalog` <sub>tool</sub>
 
-- `query` 1–500 raw characters, with non-whitespace text required; surrounding whitespace is trimmed before embedding and echo. `scope` selects `tools` (default) or `servers`; optional `category`: `research`, `government`, `public-data`, `utility`; `limit` 1–1000 (default 5), served at most 20 per call: when a larger `limit` leaves matches past the page, the response adds `truncated`, `shown`, `cap`, and a `notice` naming the offset to continue from.
-- Results carry cosine-similarity `score` (`[0, 1]`, comparable within one response). Tool searches include a `servers` roll-up with ten entries per page and `serversTotal`; an unloaded catalog returns retryable `catalog_empty`.
-- Page results with `offset` and the tools-scope roll-up independently with `serversOffset` (both default to 0). Reuse the same query, scope, category, and limit with `nextOffset` / `nextServersOffset`; null means exhausted. Each call uses the current catalog, so a refresh between pages can change ordering. Servers scope requires `serversOffset: 0` and omits roll-up fields.
-- `SIMILARITY_FLOOR` (default `0.3`) filters matches before the limit applies.
-- An empty `category` string is treated as omitted; other unknown category values are rejected. Categories are catalog labels, not publisher types, and a wrong one drops the matching server without a notice unless nothing else matches.
+- `query` 1–500 raw characters, with non-whitespace text required; surrounding whitespace is trimmed before embedding and echo. Omit it (or pass `null` or `""`) to list every entry in the scope in name order, then owning server, optionally filtered by `category`; a whitespace-only query is rejected. `scope` selects `tools` (default) or `servers`; optional `category`: `research`, `government`, `public-data`, `utility`; `limit` is a whole number of at least 1 (default 5), and one call returns at most 1000 results: a larger `limit` is served at 1000, and when matches remain the response adds `truncated`, `shown`, `cap`, and a `notice` naming the remaining count and the offset to continue from. With `CATALOG_CLAMP_LIMITS=false`, a `limit` above 1000 is rejected instead.
+- Each result's `brief` is the tool's (or server's) full catalog description. Searches carry cosine-similarity `score` (`[0, 1]`, comparable within one response); listings carry no `score` and no `effectiveQuery`, and `totalCount` counts the listed entries. Tool searches include a `servers` roll-up with ten entries per page and `serversTotal`; an unloaded catalog returns retryable `catalog_empty`.
+- Page results with `offset` and the tools-scope roll-up independently with `serversOffset` (both default to 0). Reuse the same query, scope, category, and limit with `nextOffset` / `nextServersOffset`; null means exhausted. Each call uses the current catalog, so a refresh between pages can change ordering. Servers scope and listings have no roll-up: a nonzero `serversOffset` fails with `invalid_servers_offset`.
+- `SIMILARITY_FLOOR` (default `0.3`) filters query matches before the limit applies; listings apply no floor.
+- An empty `category` or `scope` string is treated as omitted; other unknown values are rejected. Categories are catalog labels, not publisher types, and a wrong one drops the matching server without a notice unless nothing else matches.
 
 ---
 
 ### `cyanheads_describe_entry` <sub>tool</sub>
 
-- `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. Exact names win, then unique case-insensitive names; output uses canonical names. `client` optionally selects `claude-code`, `cline`, `codex`, `cursor`, `gemini`, `streamable-http` (generic `mcpServers` JSON), or `curl`.
-- `server` (optional, 1–64 characters) names the owning server: a search result's `name` + `server` describes exactly that row, in either scope. It is required when more than one server owns the tool name; with a server name, it must name the same server.
+- `name` 1–64 characters accepts a tool or server name, auto-detected or pinned via `kind`. A server resolves by exact name, then unique case-insensitive name, then this server's own record; a name matching none of those is retried once as `<name>-mcp-server`, so a stem (`pubmed`) resolves to `pubmed-mcp-server` and `cyanheads` to this server. A full name wins over its stem; a case-insensitive name several servers share, or a prefix several servers share (`noaa`), resolves to nothing. Output uses canonical names. With `kind` omitted, a name containing neither `_` nor `-` (a bare stem) is looked up as both kinds, and `ambiguous_kind` fires if it matches a tool and a server. `client` optionally selects `claude-code`, `cline`, `codex`, `cursor`, `gemini`, `streamable-http` (generic `mcpServers` JSON), or `curl`.
+- `server` (optional, 1–64 characters, stems accepted) names the owning server: a search result's `name` + `server` describes exactly that row, in either scope. It is required when more than one server owns the tool name; with a server name, it must name the same server.
 - Empty `kind`, `client`, and `server` strings are treated as omitted. Other unknown `kind` or `client` values are rejected.
-- Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets; they list what the server's manifest marks required, so a key it leaves optional is absent.
+- Both kinds return connection metadata and install snippets; server results also include the full tool inventory. Published servers get local snippets; hosted servers also get HTTP snippets. For local-only entries, `client: "curl"` returns successful metadata with an `installNotice` naming a stdio client to try. Required environment variables remain visible even without snippets; they list what the server's manifest marks required, so a key it leaves optional is absent. When the catalog lists servers that compose with the described one (for a tool, its owning server), `composesWith` carries the maintainer's list in published order, and `content[]` renders it under `## Composes with`; an entry may name no catalog server.
 - Descriptions are catalog text; obtain tool schemas from the connected server's `tools/list`.
-- Failures return `not_found`, `ambiguous_kind` (set `kind`), `ambiguous_owner` (set `server`; the error lists the owners), or retryable `catalog_empty`.
+- Failures return `not_found` (the message names the kind searched and the `server` scope; when the other kind has the name, it names that match and the kind to set), `ambiguous_kind` (set `kind`), `ambiguous_owner` (set `server`; the error lists the owners), or retryable `catalog_empty`.
 
 ## Features
 
@@ -80,9 +80,9 @@ Catalog-specific:
 
 Agent-friendly output:
 
-- Search responses echo the effective query, report the total match count before the limit, include broadening guidance when nothing matches, and name the offset to continue from when a `limit` above 20 is cut to the per-call cap
+- Search responses echo the effective query, report the total match count before the limit, include broadening guidance when nothing matches, and name the offset to continue from when a `limit` above 1000 is cut to the per-call cap
 - Discriminated `result.kind` (`tool` | `server`) on `cyanheads_describe_entry` lets callers branch on data, not string parsing
-- Every search result carries a `score` field for trust calibration, plus a `servers` roll-up so agents can see which servers matched without a second call
+- Every query-search result carries a `score` field for trust calibration, plus a `servers` roll-up so agents can see which servers matched without a second call
 
 ## Getting started
 
@@ -131,6 +131,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `CATALOG_REFRESH_SECONDS` | Background poll interval for fleet.json refresh. `0` disables; positive values up to `2147483.647` seconds use the runtime's millisecond timer resolution. | `3600` |
 | `EMBEDDING_MODEL_ID` | Hugging Face model id for query embedding. Must match `fleet.json.embeddingModel`. | `Snowflake/snowflake-arctic-embed-m-v1.5` |
 | `SIMILARITY_FLOOR` | Cosine similarity cutoff for `cyanheads_search_catalog` results. Must be within `[0, 1]`. | `0.3` |
+| `CATALOG_CLAMP_LIMITS` | Boolean string. `true` serves a search `limit` above 1000 at 1000 with a disclosure; `false` advertises `maximum: 1000` and rejects a larger `limit`. | `true` |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP base URL for traces and metrics | Unset |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Explicit OTLP logs URL; requires the OTel log peers included in the default Docker build | Unset |
@@ -143,7 +144,7 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 
