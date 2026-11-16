@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-11-16
+
+cyanheads_search_catalog serves up to 1000 results per call and lists entries when query is omitted; cyanheads_describe_entry resolves server stems, names wrong-kind matches in not_found, and returns composesWith. Moves to mcp-ts-core 0.13.22.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-10-28
 
 Publishes the cyanheads-guide agent skill over MCP, moves to mcp-ts-core 0.13.18 (which stops the HTTP transport retaining ~71 KiB per request), and sharpens the requiredEnvVars and category field descriptions.
